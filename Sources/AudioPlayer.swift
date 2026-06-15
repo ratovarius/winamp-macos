@@ -33,7 +33,15 @@ class AudioPlayer: NSObject, ObservableObject {
     /// Bumps whenever the stored preset list changes, so EQ views re-read `eqPresets()`.
     @Published private(set) var eqPresetsRevision = 0
     @Published private(set) var engineIsRunning = false
+    /// Volume normalization (ReplayGain). Off by default; opt in via `setVolumeNormalizationEnabled`.
+    @Published var volumeNormalizationEnabled = false
+    /// Prefer album gain over track gain when both ReplayGain tags are present.
+    @Published var volumeNormalizationPreferAlbum = false
+    /// ReplayGain tags read from the current track (empty when none / not yet read).
+    @Published private(set) var currentReplayGain = ReplayGain()
     private var manualPreampValue: Float = 0
+    /// Linear gain applied to the player node for normalization (1.0 = no change).
+    private nonisolated(unsafe) var normalizationLinearGain: Float = 1.0
 
     private nonisolated(unsafe) var audioEngine: AVAudioEngine?
     private nonisolated(unsafe) var playerNode: AVAudioPlayerNode?
@@ -126,7 +134,7 @@ class AudioPlayer: NSObject, ObservableObject {
             for (index, frequency) in WinampEQBands.centerFrequenciesHz.enumerated() {
                 let band = eq.bands[index]
                 band.frequency = frequency
-                band.bandwidth = 1.0
+                band.bandwidth = WinampEQBands.bandwidthsOctaves[index]
                 band.bypass = false
                 band.filterType = .parametric
                 band.gain = 0
@@ -221,13 +229,27 @@ class AudioPlayer: NSObject, ObservableObject {
 
     private nonisolated func applyEQSettings(_ settings: EQSettings) {
         guard let eq = eqNode, let preamp = preampNode else { return }
-        eq.bypass = !settings.eqEnabled
-        let linearGain = Self.linearGain(fromDecibels: settings.preampGainDB)
+        // Bit-perfect passthrough: when the EQ is disabled OR effectively flat (all bands and the
+        // preamp at ~0 dB), bypass the EQ node and pin the preamp to exact unity so samples pass
+        // through untouched rather than round-tripping the parametric filters at "0 dB".
+        let flat = Self.isEffectivelyFlat(settings)
+        let bypass = !settings.eqEnabled || flat
+        eq.bypass = bypass
+        let linearGain = (bypass && flat) ? 1.0 : Self.linearGain(fromDecibels: settings.preampGainDB)
         preamp.outputVolume = linearGain
         self.spectrumDebugPreampLinear = linearGain
         for (index, gain) in settings.bandGainsDB.enumerated() where index < eq.bands.count {
             eq.bands[index].gain = gain
         }
+        print(String(format: "[AUDIO] applyEQ enabled=%@ flat=%@ → eq.bypass=%@ preamp.linear=%.3f (passthrough=%@)",
+                     settings.eqEnabled ? "yes" : "no", flat ? "yes" : "no",
+                     bypass ? "yes" : "no", linearGain, (bypass && flat) ? "BIT-PERFECT" : "no"))
+    }
+
+    /// True when every band and the preamp sit within a hair of 0 dB — i.e. the EQ would be a no-op.
+    private nonisolated static func isEffectivelyFlat(_ settings: EQSettings, toleranceDB: Float = 0.05) -> Bool {
+        guard abs(settings.preampGainDB) <= toleranceDB else { return false }
+        return settings.bandGainsDB.allSatisfy { abs($0) <= toleranceDB }
     }
 
     private nonisolated static func linearGain(fromDecibels decibels: Float) -> Float {
@@ -336,6 +358,7 @@ class AudioPlayer: NSObject, ObservableObject {
                 let sampleRate = formatDetails?.sampleRateHz ?? newFile.fileFormat.sampleRate
                 let channels = formatDetails?.channelCount ?? Int(newFile.fileFormat.channelCount)
                 let bitrate = formatDetails?.bitrateKbps ?? 128
+                let replayGain = ReplayGainReader.read(from: url)
 
                 self.audioFile = newFile
 
@@ -348,6 +371,11 @@ class AudioPlayer: NSObject, ObservableObject {
                     player.currentSampleRate = sampleRate
                     player.currentChannels = channels
                     player.currentBitrate = bitrate
+                    player.currentReplayGain = replayGain
+                    player.recomputeNormalizationGain()
+                    if player.volumeNormalizationEnabled {
+                        player.applyPlayerVolume()
+                    }
                     player.updateNowPlayingInfo()
                     if player.eqAutoEnabled {
                         player.applyAutoPreampCompensation()
@@ -441,7 +469,8 @@ class AudioPlayer: NSObject, ObservableObject {
 
     func play() {
         self.testing_lastTransportAction = .play
-        let volume = self.volume
+        let normalization = self.volumeNormalizationEnabled ? self.normalizationLinearGain : 1.0
+        let volume = max(0, min(4, Self.volumeTaper(self.volume) * normalization))
         let balance = self.balance
         self.audioQueue.async { [weak self] in
             guard let self else { return }
@@ -624,8 +653,31 @@ class AudioPlayer: NSObject, ObservableObject {
     func setVolume(_ newVolume: Float) {
         let clamped = max(0, min(1, newVolume))
         self.volume = clamped
+        self.applyPlayerVolume()
+    }
+
+    /// Maps the linear 0…1 slider position to an amplitude using an audio (perceptual) taper.
+    ///
+    /// A 1:1 slider→amplitude mapping crowds almost all perceived loudness change into the bottom
+    /// of the travel. Real faders use a curve that's roughly logarithmic in loudness; a cubic taper
+    /// (`position³`) is the common, cheap approximation — full-scale at 1.0, ~−18 dB at the halfway
+    /// point — so the slider feels even across its range.
+    private nonisolated static func volumeTaper(_ position: Float) -> Float {
+        let p = max(0, min(1, position))
+        return p * p * p
+    }
+
+    /// Applies the current slider position (tapered) and normalization gain to the player node.
+    private func applyPlayerVolume() {
+        let tapered = Self.volumeTaper(self.volume)
+        let normalization = self.volumeNormalizationEnabled ? self.normalizationLinearGain : 1.0
+        let applied = max(0, min(4, tapered * normalization))
+        let taperDB = tapered > 0 ? 20 * log10(tapered) : -.infinity
+        let normDB = normalization > 0 ? 20 * log10(normalization) : -.infinity
+        print(String(format: "[AUDIO] volume slider=%.3f → taper=%.3f (%.1f dB) × norm=%.3f (%.1f dB) = %.3f",
+                     self.volume, tapered, taperDB, normalization, normDB, applied))
         self.audioQueue.async { [weak self] in
-            self?.playerNode?.volume = clamped
+            self?.playerNode?.volume = applied
         }
     }
 
@@ -637,16 +689,52 @@ class AudioPlayer: NSObject, ObservableObject {
         }
     }
 
+    /// Enables/disables ReplayGain volume normalization. Off by default.
+    func setVolumeNormalizationEnabled(_ enabled: Bool) {
+        self.volumeNormalizationEnabled = enabled
+        self.recomputeNormalizationGain()
+        self.applyPlayerVolume()
+    }
+
+    /// Chooses album vs. track ReplayGain when both are present.
+    func setVolumeNormalizationPreferAlbum(_ preferAlbum: Bool) {
+        self.volumeNormalizationPreferAlbum = preferAlbum
+        self.recomputeNormalizationGain()
+        if self.volumeNormalizationEnabled {
+            self.applyPlayerVolume()
+        }
+    }
+
+    /// Recomputes the cached linear normalization gain from the current track's ReplayGain tags.
+    private func recomputeNormalizationGain() {
+        let gain = self.currentReplayGain.normalizationGain(preferAlbum: self.volumeNormalizationPreferAlbum)
+        self.normalizationLinearGain = gain
+        let db = gain > 0 ? 20 * log10(gain) : -.infinity
+        print(String(format: "[AUDIO] ReplayGain track=%@ album=%@ → normalization=%.3f (%.1f dB) preferAlbum=%@",
+                     self.currentReplayGain.trackGainDB.map { String(format: "%.2f dB", $0) } ?? "—",
+                     self.currentReplayGain.albumGainDB.map { String(format: "%.2f dB", $0) } ?? "—",
+                     gain, db, self.volumeNormalizationPreferAlbum ? "yes" : "no"))
+    }
+
     func setEQBand(_ band: Int, gain: Float) {
         guard band >= 0, band < self.eqBandValues.count else { return }
         self.eqBandValues[band] = gain / 12
         self.persistEQSettings()
-        self.audioQueue.async { [weak self] in
-            guard let self, let eq = self.eqNode, band < eq.bands.count else { return }
-            eq.bands[band].gain = gain
-        }
+        let freq = band < WinampEQBands.centerFrequenciesHz.count ? WinampEQBands.centerFrequenciesHz[band] : 0
+        print(String(format: "[AUDIO] EQ band %d (%.0f Hz) gain=%.2f dB", band, freq, gain))
         if self.eqAutoEnabled {
+            // AUTO recomputes preamp; bands are never effectively flat here so apply directly.
+            self.audioQueue.async { [weak self] in
+                guard let self, let eq = self.eqNode, band < eq.bands.count else { return }
+                eq.bands[band].gain = gain
+            }
             self.applyAutoPreampCompensation()
+            return
+        }
+        // Re-apply the whole EQ so bit-perfect passthrough engages when the user returns to flat.
+        let settings = self.currentEQSettings()
+        self.audioQueue.async { [weak self] in
+            self?.applyEQSettings(settings)
         }
     }
 
@@ -658,14 +746,23 @@ class AudioPlayer: NSObject, ObservableObject {
             self.applyAutoPreampCompensation()
             return
         }
-        self.applyPreampGainToEngine(decibels: normalizedValue * 12)
+        // Re-apply the whole EQ so passthrough engages/disengages as the preamp crosses 0 dB.
+        let settings = self.currentEQSettings()
+        self.audioQueue.async { [weak self] in
+            self?.applyEQSettings(settings)
+        }
     }
 
     func setEQEnabled(_ enabled: Bool) {
         self.eqEnabled = enabled
         self.persistEQSettings()
+        let settings = self.currentEQSettings()
         self.audioQueue.async { [weak self] in
-            self?.eqNode?.bypass = !enabled
+            self?.applyEQSettings(settings)
+        }
+        if self.eqAutoEnabled {
+            // applyEQSettings wrote the manual preamp; restore AUTO compensation on top.
+            self.applyAutoPreampCompensation()
         }
     }
 
@@ -692,6 +789,7 @@ class AudioPlayer: NSObject, ObservableObject {
     private func applyPreampGainToEngine(decibels: Float) {
         let linearGain = Self.linearGain(fromDecibels: decibels)
         self.spectrumDebugPreampLinear = linearGain
+        print(String(format: "[AUDIO] preamp=%.2f dB → mixer.outputVolume=%.3f (auto=%@)", decibels, linearGain, self.eqAutoEnabled ? "on" : "off"))
         self.audioQueue.async { [weak self] in
             self?.preampNode?.outputVolume = linearGain
         }
