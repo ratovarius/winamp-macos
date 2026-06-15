@@ -26,12 +26,13 @@ enum WinampColors {
     static let buttonPressed = Color(red: 60 / 255, green: 66 / 255, blue: 88 / 255)
     static let buttonHover = Color(red: 110 / 255, green: 118 / 255, blue: 142 / 255)
 
-    // Playlist colors (classic: green text on black, solid blue selection bar)
+    // Playlist colors — exact classic Winamp 2.91 base-skin PLEDIT.TXT values:
+    // Normal=#00FF00, Current=#FFFFFF, NormalBG=#000000, SelectedBG=#0000C6.
     static let playlistBg = Color(red: 0, green: 0, blue: 0)
-    static let playlistText = Color(red: 0, green: 1.0, blue: 0.5)
-    static let playlistSelected = Color(red: 0, green: 0, blue: 0.78) // Solid Winamp blue selection bar
-    static let playlistCurrentTrack = Color.white // Playing track text is white
-    static let playlistCurrentTrackBg = Color(red: 0, green: 0, blue: 0.78) // Blue background for playing track
+    static let playlistText = Color(red: 0, green: 1.0, blue: 0)
+    static let playlistSelected = Color(red: 0, green: 0, blue: 0xC6 / 255) // #0000C6
+    static let playlistCurrentTrack = Color.white
+    static let playlistCurrentTrackBg = Color(red: 0, green: 0, blue: 0xC6 / 255)
 
     // Equalizer colors (classic Winamp orange/yellow gradient)
     static let eqSliderBg = Color(red: 20 / 255, green: 25 / 255, blue: 35 / 255)

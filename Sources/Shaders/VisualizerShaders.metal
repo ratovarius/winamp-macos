@@ -68,12 +68,31 @@ vertex SpectrumVertexOut spectrumVertex(uint vertexID [[vertex_id]],
 }
 
 fragment float4 spectrumFragment(SpectrumVertexOut in [[stage_in]]) {
+    // Authentic classic Winamp 2.91 VISCOLOR.TXT spectrum ramp (colors 2–17),
+    // ordered bottom-of-bar (green) → top-of-bar (red).
+    constexpr float3 viscolor[16] = {
+        float3( 24, 132,  8) / 255.0, // 17 bottom of spec
+        float3( 41, 148,  0) / 255.0, // 16
+        float3( 49, 156,  8) / 255.0, // 15
+        float3( 57, 181, 16) / 255.0, // 14
+        float3( 50, 190, 16) / 255.0, // 13
+        float3( 41, 206, 16) / 255.0, // 12
+        float3(148, 222, 33) / 255.0, // 11
+        float3(189, 222, 41) / 255.0, // 10
+        float3(214, 181, 33) / 255.0, // 9
+        float3(222, 165, 24) / 255.0, // 8
+        float3(198, 123,  8) / 255.0, // 7
+        float3(214, 115,  0) / 255.0, // 6
+        float3(214, 102,  0) / 255.0, // 5
+        float3(214,  90,  0) / 255.0, // 4
+        float3(206,  41, 16) / 255.0, // 3
+        float3(239,  49, 16) / 255.0, // 2 top of spec
+    };
     float t = clamp(in.uv.y, 0.0, 1.0);
-    float3 low = float3(0.0, 1.0, 0.0);
-    float3 mid = float3(1.0, 1.0, 0.0);
-    float3 high = float3(1.0, 0.2, 0.0);
-    float3 color = mix(low, mid, smoothstep(0.2, 0.55, t));
-    color = mix(color, high, smoothstep(0.55, 0.95, t));
+    float scaled = t * 15.0;
+    int idx = int(scaled);
+    int next = min(idx + 1, 15);
+    float3 color = mix(viscolor[idx], viscolor[next], fract(scaled));
     return float4(color, 1.0);
 }
 
