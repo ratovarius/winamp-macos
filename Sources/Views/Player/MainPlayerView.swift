@@ -461,7 +461,7 @@ struct MainPlayerView: View {
         // Toggle every 5 seconds
         self.autoToggleTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
             MainActor.assumeIsolated {
-                self.visualizationMode = self.visualizationMode == 0 ? 1 : 0
+                self.visualizationMode = (self.visualizationMode + 1) % VisualizationMode.allCases.count
             }
         }
     }

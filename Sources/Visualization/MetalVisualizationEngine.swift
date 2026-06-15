@@ -16,6 +16,7 @@ final class MetalVisualizationEngine: @unchecked Sendable {
     private let pipelineLock = OSAllocatedUnfairLock()
 
     private var _spectrumPipeline: MTLRenderPipelineState?
+    private var _spectrumPeakPipeline: MTLRenderPipelineState?
     private var _spectrumCompositePipeline: MTLRenderPipelineState?
     private var _oscilloscopePipeline: MTLRenderPipelineState?
     private var _fullscreenPipeline: MTLRenderPipelineState?
@@ -27,6 +28,15 @@ final class MetalVisualizationEngine: @unchecked Sendable {
             self._spectrumPipeline = self.makePipeline(vertex: "spectrumVertex", fragment: "spectrumFragment")
         }
         return self._spectrumPipeline
+    }
+
+    var spectrumPeakPipeline: MTLRenderPipelineState? {
+        self.pipelineLock.lock()
+        defer { self.pipelineLock.unlock() }
+        if self._spectrumPeakPipeline == nil {
+            self._spectrumPeakPipeline = self.makePipeline(vertex: "spectrumPeakVertex", fragment: "spectrumPeakFragment")
+        }
+        return self._spectrumPeakPipeline
     }
 
     var spectrumCompositePipeline: MTLRenderPipelineState? {
@@ -42,7 +52,7 @@ final class MetalVisualizationEngine: @unchecked Sendable {
         self.pipelineLock.lock()
         defer { self.pipelineLock.unlock() }
         if self._oscilloscopePipeline == nil {
-            self._oscilloscopePipeline = self.makePipeline(vertex: "oscilloscopeVertex", fragment: "oscilloscopeFragment")
+            self._oscilloscopePipeline = self.makePipeline(vertex: "oscilloscopeLineVertex", fragment: "oscilloscopeLineFragment")
         }
         return self._oscilloscopePipeline
     }

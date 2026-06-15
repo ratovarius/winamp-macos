@@ -16,6 +16,7 @@ struct VizUniforms {
 
 enum MetalVisualizationKind {
     case miniSpectrum
+    case miniAnalyzer
     case miniOscilloscope
     case fullscreen(preset: VisualizationPreset)
 }
@@ -35,6 +36,8 @@ protocol MetalVisualizationPlugin: AnyObject {
 final class MetalPipelineProvider {
     private let engine: MetalVisualizationEngine
     private var spectrumBuffer: MTLBuffer?
+    private var peakBuffer: MTLBuffer?
+    private var scopeColumnBuffer: MTLBuffer?
     private var waveformLeftBuffer: MTLBuffer?
     private var waveformRightBuffer: MTLBuffer?
     private var uniformBuffer: MTLBuffer?
@@ -48,6 +51,7 @@ final class MetalPipelineProvider {
     var device: MTLDevice { self.engine.device }
     var commandQueue: MTLCommandQueue { self.engine.commandQueue }
     var spectrumPipeline: MTLRenderPipelineState? { self.engine.spectrumPipeline }
+    var spectrumPeakPipeline: MTLRenderPipelineState? { self.engine.spectrumPeakPipeline }
     var spectrumCompositePipeline: MTLRenderPipelineState? { self.engine.spectrumCompositePipeline }
     var oscilloscopePipeline: MTLRenderPipelineState? { self.engine.oscilloscopePipeline }
     var fullscreenPipeline: MTLRenderPipelineState? { self.engine.fullscreenPipeline }
@@ -68,41 +72,54 @@ final class MetalPipelineProvider {
     }
 
     func updateSpectrumBuffer(_ spectrum: [Float]) -> MTLBuffer? {
-        let byteCount = MemoryLayout<Float>.stride * spectrum.count
-        if self.spectrumBuffer == nil || self.spectrumBuffer?.length ?? 0 < byteCount {
-            self.spectrumBuffer = self.device.makeBuffer(length: byteCount, options: .storageModeShared)
+        self.updateFloatBuffer(&self.spectrumBuffer, values: spectrum)
+    }
+
+    func updatePeakBuffer(_ peaks: [Float]) -> MTLBuffer? {
+        self.updateFloatBuffer(&self.peakBuffer, values: peaks)
+    }
+
+    func updateScopeColumnBuffer(_ columns: [Float]) -> MTLBuffer? {
+        self.updateFloatBuffer(&self.scopeColumnBuffer, values: columns)
+    }
+
+    private func updateFloatBuffer(_ buffer: inout MTLBuffer?, values: [Float]) -> MTLBuffer? {
+        let byteCount = MemoryLayout<Float>.stride * values.count
+        if buffer == nil || buffer?.length ?? 0 < byteCount {
+            buffer = self.device.makeBuffer(length: byteCount, options: .storageModeShared)
         }
-        guard let buffer = self.spectrumBuffer else { return nil }
-        spectrum.withUnsafeBytes { pointer in
+        guard let buffer else { return nil }
+        values.withUnsafeBytes { pointer in
             guard let baseAddress = pointer.baseAddress else { return }
             memcpy(buffer.contents(), baseAddress, byteCount)
         }
         return buffer
     }
 
+    func clearHistoryTexture() {
+        guard let history = self.historyTexture,
+              let commandBuffer = self.commandQueue.makeCommandBuffer()
+        else {
+            return
+        }
+
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = history
+        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].storeAction = .store
+        descriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
+        encoder.endEncoding()
+        commandBuffer.commit()
+    }
+
     func updateWaveformBuffer(_ samples: [Float], channel: WaveformChannel) -> MTLBuffer? {
-        let byteCount = MemoryLayout<Float>.stride * samples.count
         switch channel {
         case .left:
-            if self.waveformLeftBuffer == nil || self.waveformLeftBuffer?.length ?? 0 < byteCount {
-                self.waveformLeftBuffer = self.device.makeBuffer(length: byteCount, options: .storageModeShared)
-            }
-            guard let buffer = self.waveformLeftBuffer else { return nil }
-            samples.withUnsafeBytes { pointer in
-                guard let baseAddress = pointer.baseAddress else { return }
-                memcpy(buffer.contents(), baseAddress, byteCount)
-            }
-            return buffer
+            self.updateFloatBuffer(&self.waveformLeftBuffer, values: samples)
         case .right:
-            if self.waveformRightBuffer == nil || self.waveformRightBuffer?.length ?? 0 < byteCount {
-                self.waveformRightBuffer = self.device.makeBuffer(length: byteCount, options: .storageModeShared)
-            }
-            guard let buffer = self.waveformRightBuffer else { return nil }
-            samples.withUnsafeBytes { pointer in
-                guard let baseAddress = pointer.baseAddress else { return }
-                memcpy(buffer.contents(), baseAddress, byteCount)
-            }
-            return buffer
+            self.updateFloatBuffer(&self.waveformRightBuffer, values: samples)
         }
     }
 
@@ -172,8 +189,53 @@ final class MiniSpectrumMetalPlugin: MetalVisualizationPlugin {
     }
 }
 
-final class MiniOscilloscopeMetalPlugin: MetalVisualizationPlugin {
-    let kind: MetalVisualizationKind = .miniOscilloscope
+final class MiniAnalyzerMetalPlugin: MetalVisualizationPlugin {
+    let kind: MetalVisualizationKind = .miniAnalyzer
+
+    func draw(
+        encoder: MTLRenderCommandEncoder,
+        features: AudioFeatures,
+        peaks: [Float],
+        time: CFTimeInterval,
+        drawableSize: CGSize,
+        pipelines: MetalPipelineProvider
+    ) {
+        let uniforms = VizUniforms(
+            time: Float(time),
+            bass: features.bassEnergy,
+            mid: features.midEnergy,
+            treble: features.trebleEnergy,
+            resolution: SIMD2(Float(drawableSize.width), Float(drawableSize.height)),
+            mode: 2,
+            preset: 0,
+            energy: features.overallEnergy,
+            spectrumBandCount: UInt32(AudioFeatures.spectrumBandCount),
+            scopeSampleCount: 0
+        )
+
+        guard let barPipeline = pipelines.spectrumPipeline,
+              let spectrumBuffer = pipelines.makeSpectrumBuffer(from: features.spectrum),
+              let uniformBuffer = pipelines.makeUniformBuffer(uniforms)
+        else {
+            return
+        }
+
+        encoder.setRenderPipelineState(barPipeline)
+        encoder.setVertexBuffer(spectrumBuffer, offset: 0, index: 0)
+        encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: AudioFeatures.spectrumBandCount * 6)
+
+        guard let peakPipeline = pipelines.spectrumPeakPipeline,
+              let peakBuffer = pipelines.updatePeakBuffer(peaks)
+        else {
+            return
+        }
+
+        encoder.setRenderPipelineState(peakPipeline)
+        encoder.setVertexBuffer(peakBuffer, offset: 0, index: 0)
+        encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: AudioFeatures.spectrumBandCount * 6)
+    }
 
     func draw(
         encoder: MTLRenderCommandEncoder,
@@ -182,9 +244,69 @@ final class MiniOscilloscopeMetalPlugin: MetalVisualizationPlugin {
         drawableSize: CGSize,
         pipelines: MetalPipelineProvider
     ) {
+        self.draw(
+            encoder: encoder,
+            features: features,
+            peaks: Array(repeating: 0, count: AudioFeatures.spectrumBandCount),
+            time: time,
+            drawableSize: drawableSize,
+            pipelines: pipelines
+        )
+    }
+}
+
+enum OscilloscopeColumnSampler {
+    /// Downsamples a mono waveform to display columns using Webamp's slice-first bucketing.
+    static func columns(from waveform: [Float], count: Int) -> [Float] {
+        guard count > 1, !waveform.isEmpty else {
+            return Array(repeating: 0, count: max(count, 0))
+        }
+
+        var columns = Array(repeating: Float(0), count: count)
+        let sourceCount = waveform.count
+        let sliceWidth = max(1, sourceCount / count)
+
+        for column in 0 ..< count {
+            let index = min(column * sliceWidth, sourceCount - 1)
+            columns[column] = Self.mapSampleToLineLevel(waveform[index])
+        }
+
+        return columns
+    }
+
+    /// Maps a float PCM sample to NDC using Winamp's byte-grid quantization for crisp scope pixels.
+    private static func mapSampleToLineLevel(_ sample: Float) -> Float {
+        let clamped = min(max(sample, -1), 1)
+        let byte = (clamped * 0.5 + 0.5) * 255
+        let row = round((byte / 16) * 2) - 9
+        let clampedRow = min(max(row, 0), 14)
+        return 1 - (clampedRow / 14) * 2
+    }
+}
+
+final class MiniOscilloscopeMetalPlugin: MetalVisualizationPlugin {
+    let kind: MetalVisualizationKind = .miniOscilloscope
+    private var frozenColumns: [Float]?
+
+    func reset() {
+        self.frozenColumns = nil
+    }
+
+    func draw(
+        encoder: MTLRenderCommandEncoder,
+        features: AudioFeatures,
+        time: CFTimeInterval,
+        drawableSize: CGSize,
+        pipelines: MetalPipelineProvider
+    ) {
+        let columnCount = AudioFeatures.scopeColumnCount(forWidth: drawableSize.width)
+        let columns = self.resolvedColumns(
+            features: features,
+            columnCount: columnCount
+        )
+
         guard let pipeline = pipelines.oscilloscopePipeline,
-              let leftBuffer = pipelines.updateWaveformBuffer(features.waveformLeft, channel: .left),
-              let rightBuffer = pipelines.updateWaveformBuffer(features.waveformRight, channel: .right),
+              let columnBuffer = pipelines.updateScopeColumnBuffer(columns),
               let uniformBuffer = pipelines.makeUniformBuffer(
                   VizUniforms(
                       time: Float(time),
@@ -196,7 +318,7 @@ final class MiniOscilloscopeMetalPlugin: MetalVisualizationPlugin {
                       preset: 0,
                       energy: features.overallEnergy,
                       spectrumBandCount: 0,
-                      scopeSampleCount: UInt32(AudioFeatures.waveformSampleCount)
+                      scopeSampleCount: UInt32(columnCount)
                   )
               )
         else {
@@ -204,11 +326,42 @@ final class MiniOscilloscopeMetalPlugin: MetalVisualizationPlugin {
         }
 
         encoder.setRenderPipelineState(pipeline)
-        encoder.setVertexBuffer(leftBuffer, offset: 0, index: 0)
-        encoder.setVertexBuffer(rightBuffer, offset: 0, index: 1)
-        encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 2)
-        encoder.drawPrimitives(type: .lineStrip, vertexStart: 0, vertexCount: AudioFeatures.waveformSampleCount)
-        encoder.drawPrimitives(type: .lineStrip, vertexStart: AudioFeatures.waveformSampleCount, vertexCount: AudioFeatures.waveformSampleCount)
+        encoder.setVertexBuffer(columnBuffer, offset: 0, index: 0)
+        encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
+        encoder.drawPrimitives(type: .lineStrip, vertexStart: 0, vertexCount: columnCount)
+    }
+
+    private func resolvedColumns(features: AudioFeatures, columnCount: Int) -> [Float] {
+        let mono = zip(features.waveformLeft, features.waveformRight).map { ($0 + $1) * 0.5 }
+
+        if features.isPlaying {
+            let columns = OscilloscopeColumnSampler.columns(from: mono, count: columnCount)
+            self.frozenColumns = columns
+            return columns
+        }
+
+        if let frozenColumns = self.frozenColumns, frozenColumns.count == columnCount {
+            return frozenColumns
+        }
+
+        if let frozenColumns = self.frozenColumns, !frozenColumns.isEmpty {
+            return Self.resample(frozenColumns, to: columnCount)
+        }
+
+        return OscilloscopeColumnSampler.columns(from: mono, count: columnCount)
+    }
+
+    private static func resample(_ values: [Float], to count: Int) -> [Float] {
+        guard count > 0, !values.isEmpty else { return Array(repeating: 0, count: max(count, 0)) }
+        if values.count == count { return values }
+
+        return (0 ..< count).map { index in
+            let source = Float(index) / Float(max(count - 1, 1)) * Float(values.count - 1)
+            let lower = Int(floor(source))
+            let upper = min(lower + 1, values.count - 1)
+            let fraction = source - Float(lower)
+            return values[lower] + (values[upper] - values[lower]) * fraction
+        }
     }
 }
 

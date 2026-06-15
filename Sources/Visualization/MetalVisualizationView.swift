@@ -6,6 +6,7 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
     private var plugin: MetalVisualizationPlugin
     private let pipelineProvider: MetalPipelineProvider
     private var featureSmoother = VisualizationFeatureSmoother()
+    private var peakTracker = SpectrumPeakTracker()
     private var startTime = CACurrentMediaTime()
     private var lastFrameTime = CACurrentMediaTime()
 
@@ -25,7 +26,15 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
     }
 
     func updatePlugin(_ plugin: MetalVisualizationPlugin) {
+        guard type(of: plugin) != type(of: self.plugin) else { return }
         self.plugin = plugin
+        self.resetTransientState()
+    }
+
+    private func resetTransientState() {
+        self.featureSmoother = VisualizationFeatureSmoother()
+        self.peakTracker.reset()
+        self.pipelineProvider.clearHistoryTexture()
     }
 
     func mtkView(_: MTKView, drawableSizeWillChange _: CGSize) {}
@@ -41,7 +50,14 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
         let deltaTime = Float(now - self.lastFrameTime)
         self.lastFrameTime = now
 
-        let raw = self.featureBus.snapshot()
+        let waveformSampleCount: Int
+        if case .miniOscilloscope = self.plugin.kind {
+            waveformSampleCount = AudioFeatures.scopeWaveformSampleCount
+        } else {
+            waveformSampleCount = AudioFeatures.waveformSampleCount
+        }
+
+        let raw = self.featureBus.snapshot(waveformSampleCount: waveformSampleCount)
         let smoothedSpectrum = self.featureSmoother.update(
             targets: raw.spectrum,
             isPlaying: raw.isPlaying,
@@ -65,6 +81,25 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
                 features: features,
                 time: elapsed,
                 deltaTime: deltaTime
+            )
+        } else if case .miniAnalyzer = self.plugin.kind {
+            let peakResult = self.peakTracker.update(
+                targets: smoothedSpectrum,
+                isPlaying: raw.isPlaying,
+                deltaTime: deltaTime
+            )
+            let analyzerFeatures = AudioFeatures(
+                spectrum: peakResult.bars,
+                waveformLeft: raw.waveformLeft,
+                waveformRight: raw.waveformRight,
+                isPlaying: raw.isPlaying
+            )
+            self.drawAnalyzer(
+                commandBuffer: commandBuffer,
+                view: view,
+                features: analyzerFeatures,
+                peaks: peakResult.peaks,
+                time: elapsed
             )
         } else {
             guard let renderPassDescriptor = view.currentRenderPassDescriptor,
@@ -163,6 +198,31 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
         )
         blitEncoder.endEncoding()
     }
+
+    private func drawAnalyzer(
+        commandBuffer: MTLCommandBuffer,
+        view: MTKView,
+        features: AudioFeatures,
+        peaks: [Float],
+        time: CFTimeInterval
+    ) {
+        guard let renderPassDescriptor = view.currentRenderPassDescriptor,
+              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor),
+              let analyzer = self.plugin as? MiniAnalyzerMetalPlugin
+        else {
+            return
+        }
+
+        analyzer.draw(
+            encoder: encoder,
+            features: features,
+            peaks: peaks,
+            time: time,
+            drawableSize: view.drawableSize,
+            pipelines: self.pipelineProvider
+        )
+        encoder.endEncoding()
+    }
 }
 
 private enum MetalVisualizationViewFactory {
@@ -203,24 +263,46 @@ struct MetalVisualizationView: NSViewRepresentable {
     @MainActor
     final class Coordinator {
         let renderer: MetalVisualizationRenderer
-        private let spectrumPlugin = MiniSpectrumMetalPlugin()
-        private let oscilloscopePlugin = MiniOscilloscopeMetalPlugin()
+        private let spectrumPlugin: MiniSpectrumMetalPlugin
+        private let analyzerPlugin: MiniAnalyzerMetalPlugin
+        private let oscilloscopePlugin: MiniOscilloscopeMetalPlugin
+        private var currentMode: VisualizationMode
 
         init(mode: VisualizationMode) {
+            let spectrum = MiniSpectrumMetalPlugin()
+            let analyzer = MiniAnalyzerMetalPlugin()
+            let oscilloscope = MiniOscilloscopeMetalPlugin()
+            self.spectrumPlugin = spectrum
+            self.analyzerPlugin = analyzer
+            self.oscilloscopePlugin = oscilloscope
+            self.currentMode = mode
             self.renderer = MetalVisualizationRenderer(
-                plugin: Self.plugin(for: mode, spectrum: spectrumPlugin, oscilloscope: oscilloscopePlugin)
+                plugin: Self.plugin(
+                    for: mode,
+                    spectrum: spectrum,
+                    analyzer: analyzer,
+                    oscilloscope: oscilloscope
+                )
             )
         }
 
         func setMode(_ mode: VisualizationMode) {
+            guard mode != self.currentMode else { return }
+            self.currentMode = mode
             self.renderer.updatePlugin(
-                Self.plugin(for: mode, spectrum: self.spectrumPlugin, oscilloscope: self.oscilloscopePlugin)
+                Self.plugin(
+                    for: mode,
+                    spectrum: self.spectrumPlugin,
+                    analyzer: self.analyzerPlugin,
+                    oscilloscope: self.oscilloscopePlugin
+                )
             )
         }
 
         private static func plugin(
             for mode: VisualizationMode,
             spectrum: MiniSpectrumMetalPlugin,
+            analyzer: MiniAnalyzerMetalPlugin,
             oscilloscope: MiniOscilloscopeMetalPlugin
         ) -> MetalVisualizationPlugin {
             switch mode {
@@ -228,6 +310,8 @@ struct MetalVisualizationView: NSViewRepresentable {
                 spectrum
             case .oscilloscope:
                 oscilloscope
+            case .analyzer:
+                analyzer
             }
         }
     }

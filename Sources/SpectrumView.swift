@@ -2,20 +2,25 @@ import SwiftUI
 
 // MARK: - Visualization Mode
 
-enum VisualizationMode: Int {
+enum VisualizationMode: Int, CaseIterable {
     case bars = 0
     case oscilloscope = 1
+    case analyzer = 2
 
     static func from(storageValue: Int) -> VisualizationMode {
-        storageValue == 0 ? .bars : .oscilloscope
+        let count = Self.allCases.count
+        let index = ((storageValue % count) + count) % count
+        return Self.allCases[index]
     }
 
     var storageValue: Int {
         rawValue
     }
 
-    func toggled() -> VisualizationMode {
-        self == .bars ? .oscilloscope : .bars
+    func advanced() -> VisualizationMode {
+        let all = Self.allCases
+        let next = (self.rawValue + 1) % all.count
+        return all[next]
     }
 }
 
@@ -33,10 +38,8 @@ struct ClassicVisualizerView: View {
             .background(Color.black)
             .contentShape(Rectangle())
             .onTapGesture {
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    let newMode = self.visualizationMode.toggled()
-                    self.visualizationModeRaw = newMode.storageValue
-                }
+                let newMode = self.visualizationMode.advanced()
+                self.visualizationModeRaw = newMode.storageValue
             }
     }
 }

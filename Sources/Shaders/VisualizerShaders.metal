@@ -76,17 +76,17 @@ fragment float4 spectrumFragment(SpectrumVertexOut in [[stage_in]]) {
         float3( 49, 156,  8) / 255.0, // 15
         float3( 57, 181, 16) / 255.0, // 14
         float3( 50, 190, 16) / 255.0, // 13
-        float3( 41, 206, 16) / 255.0, // 12
-        float3(148, 222, 33) / 255.0, // 11
-        float3(189, 222, 41) / 255.0, // 10
-        float3(214, 181, 33) / 255.0, // 9
-        float3(222, 165, 24) / 255.0, // 8
-        float3(198, 123,  8) / 255.0, // 7
-        float3(214, 115,  0) / 255.0, // 6
-        float3(214, 102,  0) / 255.0, // 5
-        float3(214,  90,  0) / 255.0, // 4
-        float3(206,  41, 16) / 255.0, // 3
-        float3(239,  49, 16) / 255.0, // 2 top of spec
+        float3( 41, 206,  16) / 255.0, // 12
+        float3(148, 222,  33) / 255.0, // 11
+        float3(189, 222,  41) / 255.0, // 10
+        float3(214, 181,  33) / 255.0, // 9
+        float3(222, 165,  24) / 255.0, // 8
+        float3(198, 123,   8) / 255.0, // 7
+        float3(214, 115,   0) / 255.0, // 6
+        float3(214, 102,   0) / 255.0, // 5
+        float3(214,  90,   0) / 255.0, // 4
+        float3(206,  41,  16) / 255.0, // 3
+        float3(239,  49,  16) / 255.0, // 2 top of spec
     };
     float t = clamp(in.uv.y, 0.0, 1.0);
     float scaled = t * 15.0;
@@ -94,6 +94,42 @@ fragment float4 spectrumFragment(SpectrumVertexOut in [[stage_in]]) {
     int next = min(idx + 1, 15);
     float3 color = mix(viscolor[idx], viscolor[next], fract(scaled));
     return float4(color, 1.0);
+}
+
+// MARK: - Analyzer peak markers (classic 1px hold lines)
+
+vertex SpectrumVertexOut spectrumPeakVertex(uint vertexID [[vertex_id]],
+                                          constant float *peaks [[buffer(0)]],
+                                          constant VizUniforms &uniforms [[buffer(1)]]) {
+    const uint barCount = max(uniforms.spectrumBandCount, 1u);
+    const uint corners[6] = {0, 1, 2, 2, 1, 3};
+
+    uint tri = vertexID / 6;
+    uint corner = corners[vertexID % 6];
+    float barWidth = 2.0 / float(barCount);
+    float x0 = -1.0 + float(tri) * barWidth;
+    float x1 = x0 + barWidth * 0.82;
+
+    float level = peaks[min(tri, barCount - 1)];
+    float yBottom = -1.0 + level * 1.85;
+    float yTop = min(yBottom + 0.12, 1.0);
+
+    float2 position;
+    if (corner == 0) position = float2(x0, yBottom);
+    else if (corner == 1) position = float2(x1, yBottom);
+    else if (corner == 2) position = float2(x0, yTop);
+    else position = float2(x1, yTop);
+
+    SpectrumVertexOut out;
+    out.position = float4(position, 0.0, 1.0);
+    out.uv = float2(0.0, 1.0);
+    out.level = level;
+    return out;
+}
+
+fragment float4 spectrumPeakFragment(SpectrumVertexOut in [[stage_in]]) {
+    // VISCOLOR entry 24 — classic analyzer peak dot.
+    return float4(214.0 / 255.0, 206.0 / 255.0, 181.0 / 255.0, 1.0);
 }
 
 fragment float4 spectrumCompositeFragment(float4 position [[position]],
@@ -109,7 +145,89 @@ fragment float4 spectrumCompositeFragment(float4 position [[position]],
     return float4(persisted, 1.0);
 }
 
-// MARK: - Mini oscilloscope
+// MARK: - Mini oscilloscope (high-resolution line, classic Winamp style)
+
+struct ScopeLineVertexOut {
+    float4 position [[position]];
+};
+
+vertex ScopeLineVertexOut oscilloscopeLineVertex(uint vertexID [[vertex_id]],
+                                                 constant float *columnLevels [[buffer(0)]],
+                                                 constant VizUniforms &uniforms [[buffer(1)]]) {
+    const uint columnCount = max(uniforms.scopeSampleCount, 2u);
+    const uint index = min(vertexID, columnCount - 1u);
+    const float x = -1.0 + (float(index) / float(columnCount - 1u)) * 2.0;
+    const float y = columnLevels[index] * 0.92;
+
+    ScopeLineVertexOut out;
+    out.position = float4(x, y, 0.0, 1.0);
+    return out;
+}
+
+fragment float4 oscilloscopeLineFragment(ScopeLineVertexOut in [[stage_in]]) {
+    // Classic scope trace — bright neutral green-white (VISCOLOR 18).
+    return float4(0.82, 0.98, 0.78, 1.0);
+}
+
+// Legacy column-fill scope (kept for reference)
+
+struct ScopeColumnVertexOut {
+    float4 position [[position]];
+    float shade;
+};
+
+vertex ScopeColumnVertexOut oscilloscopeColumnVertex(uint vertexID [[vertex_id]],
+                                                     constant float *columnLevels [[buffer(0)]],
+                                                     constant VizUniforms &uniforms [[buffer(1)]]) {
+    const uint columnCount = max(uniforms.scopeSampleCount, 2u);
+    const uint corners[6] = {0, 1, 2, 2, 1, 3};
+
+    uint tri = vertexID / 6;
+    uint corner = corners[vertexID % 6];
+    float columnWidth = 2.0 / float(columnCount);
+    float x0 = -1.0 + float(tri) * columnWidth;
+    float x1 = x0 + columnWidth;
+
+    float level = columnLevels[min(tri, columnCount - 1)];
+    float yCenter = level * 0.85;
+    float yPrev = tri > 0 ? columnLevels[tri - 1] * 0.85 : yCenter;
+    float yTop = min(yCenter, yPrev);
+    float yBottom = max(yCenter, yPrev);
+    if (tri == 0) {
+        yTop = yCenter;
+        yBottom = yCenter;
+    }
+
+    float2 position;
+    if (corner == 0) position = float2(x0, yTop);
+    else if (corner == 1) position = float2(x1, yTop);
+    else if (corner == 2) position = float2(x0, yBottom);
+    else position = float2(x1, yBottom);
+
+    ScopeColumnVertexOut out;
+    out.position = float4(position, 0.0, 1.0);
+    out.shade = abs(yCenter);
+    return out;
+}
+
+fragment float4 oscilloscopeColumnFragment(ScopeColumnVertexOut in [[stage_in]]) {
+    // Classic scope ramp (VISCOLOR 18–22).
+    constexpr float3 shades[5] = {
+        float3( 41, 206,  16) / 255.0,
+        float3(148, 222,  33) / 255.0,
+        float3(214, 181,  33) / 255.0,
+        float3(214, 115,   0) / 255.0,
+        float3(239,  49,  16) / 255.0,
+    };
+    float t = clamp(in.shade, 0.0, 1.0);
+    float scaled = t * 4.0;
+    int idx = int(scaled);
+    int next = min(idx + 1, 4);
+    float3 color = mix(shades[idx], shades[next], fract(scaled));
+    return float4(color, 1.0);
+}
+
+// Legacy line-strip oscilloscope (unused; kept for reference during migration)
 
 vertex ScopeVertexOut oscilloscopeVertex(uint vertexID [[vertex_id]],
                                          constant float *waveLeft [[buffer(0)]],

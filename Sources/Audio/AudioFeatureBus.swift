@@ -4,8 +4,15 @@ import Foundation
 struct AudioFeatures: Sendable {
     static let spectrumBandCount = 32
     static let fftSize = 1024
-    static let fftHopSize = 512
+    static let fftHopSize = 256
     static let waveformSampleCount = 256
+    /// Time-domain samples fed into the scope (Webamp uses 576 of its 1024-point FFT window).
+    static let scopeWaveformSampleCount = 2048
+
+    static func scopeColumnCount(forWidth width: CGFloat) -> Int {
+        let pixelColumns = Int(width.rounded(.up))
+        return min(max(pixelColumns, 120), 512)
+    }
 
     var spectrum: [Float]
     var waveformLeft: [Float]
@@ -76,9 +83,9 @@ final class AudioFeatureBus: @unchecked Sendable {
 
     /// Builds a display snapshot: resamples waveform ring + returns raw spectrum targets.
     /// Spectrum smoothing happens in `MetalVisualizationRenderer` at display rate.
-    func snapshot() -> AudioFeatures {
+    func snapshot(waveformSampleCount: Int = AudioFeatures.waveformSampleCount) -> AudioFeatures {
         let (targets, playing) = self.spectrumSnapshot()
-        let waveform = self.waveformRing.readResampled(count: AudioFeatures.waveformSampleCount)
+        let waveform = self.waveformRing.readResampled(count: waveformSampleCount)
         return AudioFeatures(
             spectrum: targets,
             waveformLeft: waveform.left,
