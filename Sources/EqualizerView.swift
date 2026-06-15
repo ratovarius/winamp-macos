@@ -122,10 +122,6 @@ struct EqualizerView: View {
                     .padding(.trailing, EQLayout.columnGap * s)
 
                     VStack(spacing: 2 * s) {
-                        Text("PREAMP")
-                            .winampFont(size: 8, design: .monospaced, scale: s)
-                            .foregroundColor(.white.opacity(0.9))
-
                         ClassicEQSlider(
                             value: Binding(
                                 get: { self.audioPlayer.eqPreampValue },
@@ -135,7 +131,10 @@ struct EqualizerView: View {
                             scale: s
                         )
 
-                        Spacer().frame(height: 12 * s)
+                        Text("PREAMP")
+                            .winampFont(size: 7, weight: .bold, design: .monospaced, scale: s)
+                            .foregroundColor(WinampColors.displayText)
+                            .fixedSize()
                     }
                     .frame(width: EQLayout.preampWidth * s)
 
@@ -290,23 +289,26 @@ struct FrequencyResponseGraph: View {
 
     var body: some View {
         Canvas { context, size in
-            let gridColor = Color.white.opacity(0.1)
-
-            for i in 0 ... 4 {
-                let y = size.height / 4 * CGFloat(i)
-                var path = Path()
-                path.move(to: CGPoint(x: 0, y: y))
-                path.addLine(to: CGPoint(x: size.width, y: y))
-                context.stroke(path, with: .color(gridColor), lineWidth: 0.5)
+            // Classic Winamp graph: faint dark-green dotted grid, with a brighter
+            // center line at 0 dB.
+            let dotColor = Color(red: 0, green: 0.45, blue: 0.18)
+            let rows = 7
+            let cols = 19
+            for r in 0 ... rows {
+                let y = size.height / CGFloat(rows) * CGFloat(r)
+                for c in 0 ... cols {
+                    let x = size.width / CGFloat(cols) * CGFloat(c)
+                    context.fill(
+                        Path(CGRect(x: x, y: y, width: 1, height: 1)),
+                        with: .color(dotColor)
+                    )
+                }
             }
-
-            for index in 0 ... WinampEQBands.bandCount {
-                let x = size.width / CGFloat(WinampEQBands.bandCount) * CGFloat(index)
-                var path = Path()
-                path.move(to: CGPoint(x: x, y: 0))
-                path.addLine(to: CGPoint(x: x, y: size.height))
-                context.stroke(path, with: .color(gridColor), lineWidth: 0.5)
-            }
+            // Brighter horizontal mid-line (0 dB)
+            var midline = Path()
+            midline.move(to: CGPoint(x: 0, y: size.height / 2))
+            midline.addLine(to: CGPoint(x: size.width, y: size.height / 2))
+            context.stroke(midline, with: .color(dotColor.opacity(0.9)), lineWidth: 0.5)
 
             let points = WinampEQBands.responseCurvePoints(
                 bandValues: bandValues,

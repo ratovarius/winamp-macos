@@ -65,8 +65,13 @@ Tests live in `Tests/WinampTests`. Run them via the project script, which genera
 ./scripts/run-tests.sh
 ```
 
+## UI Fidelity
+
+Classic Winamp 2.x layout and behavior are informed by **[Webamp](https://github.com/captbaritone/webamp)** ([webamp.org](https://webamp.org/)) — sprite coordinates, window dimensions, shade mode, and playlist chrome. See **[WEBAMP_REFERENCE.md](WEBAMP_REFERENCE.md)** for the full analysis, dimension tables, and implementation priorities.
+
 ## Documentation
 
+- [WEBAMP_REFERENCE.md](WEBAMP_REFERENCE.md) — Webamp fidelity analysis, canonical dimensions, gaps, and roadmap
 - [AGENTS.md](AGENTS.md) — architecture, conventions, known issues, and roadmap (read this before contributing)
 - [BUILDING.md](BUILDING.md) — full build instructions
 - [USAGE.md](USAGE.md) — end-user usage guide

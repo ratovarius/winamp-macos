@@ -304,81 +304,64 @@ struct MainPlayerView: View {
                 .padding(.top, 6)
                 .padding(.bottom, 4)
 
-                // Large progress bar with 3D inset effect
+                // Classic position bar: thin recessed trough + small notched thumb.
                 GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        // Inset background with 3D shadow effect
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.black.opacity(0.6))
-                            .overlay(
-                                // Enhanced 3D inset effect - dark top/left, bright bottom/right
-                                RoundedRectangle(cornerRadius: 8)
-                                    .strokeBorder(
-                                        LinearGradient(
-                                            colors: [
-                                                Color.black.opacity(0.9), // Dark shadow at top
-                                                Color.black.opacity(0.5),
-                                                Color.white.opacity(0.1),
-                                                Color.white.opacity(0.25), // Bright highlight at bottom
-                                            ],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        ),
-                                        lineWidth: 2
-                                    )
-                            )
+                    let thumbW: CGFloat = 29 * uiScale
+                    let trackH: CGFloat = 10 * uiScale
+                    let percent = CGFloat(self.seekDragging
+                        ? self.seekDragPercent
+                        : (self.audioPlayer.currentTime / max(self.audioPlayer.duration, 1)))
+                    let thumbX = max(0, min(geo.size.width - thumbW, (geo.size.width - thumbW) * percent))
 
-                        // Progress fill with raised 3D effect (orange/yellow gradient)
-                        RoundedRectangle(cornerRadius: 7)
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        Color(red: 0.98, green: 0.78, blue: 0.28),
-                                        Color(red: 0.88, green: 0.68, blue: 0.18),
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
+                    ZStack(alignment: .leading) {
+                        // Recessed trough
+                        Rectangle()
+                            .fill(Color.black)
+                            .frame(height: trackH)
+                            .overlay(
+                                Rectangle().strokeBorder(
+                                    LinearGradient(
+                                        colors: [Color.black.opacity(0.9), WinampColors.borderLight.opacity(0.4)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    ),
+                                    lineWidth: 1
                                 )
                             )
-                            .frame(width: max(
-                                16,
-                                geo.size.width * CGFloat(self.seekDragging ? self.seekDragPercent : (self.audioPlayer.currentTime / max(
-                                    self.audioPlayer.duration,
-                                    1
-                                )))
-                            ))
-                            .overlay(
-                                // Enhanced raised bevel - bright white on top, dark shadow on bottom
-                                RoundedRectangle(cornerRadius: 7)
-                                    .strokeBorder(
-                                        LinearGradient(
-                                            colors: [
-                                                Color.white.opacity(0.7), // Bright highlight at top
-                                                Color.white.opacity(0.3),
-                                                Color.black.opacity(0.2),
-                                                Color.black.opacity(0.5), // Dark shadow at bottom
-                                            ],
-                                            startPoint: .top,
-                                            endPoint: .bottom
-                                        ),
-                                        lineWidth: 1.5
+
+                        // Notched silver thumb
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 1 * uiScale)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            Color(red: 0.90, green: 0.92, blue: 0.96),
+                                            Color(red: 0.62, green: 0.65, blue: 0.72),
+                                        ],
+                                        startPoint: .top,
+                                        endPoint: .bottom
                                     )
-                            )
-                            .padding(2)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 1 * uiScale)
+                                        .strokeBorder(Color.black.opacity(0.55), lineWidth: 1)
+                                )
+                            // Vertical center notch
+                            Rectangle()
+                                .fill(Color.black.opacity(0.4))
+                                .frame(width: 2 * uiScale, height: trackH * 0.55)
+                        }
+                        .frame(width: thumbW, height: trackH)
+                        .offset(x: thumbX)
                     }
-                    .frame(height: 20)
-                    .overlay(
-                        // Outer border
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(Color.black.opacity(0.6), lineWidth: 1)
-                    )
-                    .shadow(color: Color.black.opacity(0.3), radius: 1, x: 0, y: 1)
+                    .frame(height: trackH)
+                    .frame(maxHeight: .infinity, alignment: .center)
+                    .contentShape(Rectangle())
                     .gesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { drag in
                                 self.seekDragging = true
-                                let percent = max(0, min(1, Double(drag.location.x / geo.size.width)))
-                                self.seekDragPercent = percent
+                                self.seekDragPercent = max(0, min(1, Double(drag.location.x / geo.size.width)))
                             }
                             .onEnded { drag in
                                 let percent = max(0, min(1, Double(drag.location.x / geo.size.width)))
@@ -388,9 +371,9 @@ struct MainPlayerView: View {
                             }
                     )
                 }
-                .frame(height: 20)
+                .frame(height: 12 * uiScale)
                 .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                .padding(.vertical, 4)
 
                 // Control buttons row
                 HStack(spacing: 4) {
