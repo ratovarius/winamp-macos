@@ -45,17 +45,24 @@ struct MainPlayerView: View {
                             }
                             .buttonStyle(.plain)
 
-                            SevenSegmentDisplay(
-                                text: self.formatTime(
-                                    self.showRemainingTime
-                                        ? -(self.audioPlayer.duration - self.audioPlayer.currentTime)
-                                        : self.audioPlayer.currentTime,
-                                    showNegative: self.showRemainingTime
-                                ),
-                                digitWidth: 13 * uiScale,
-                                digitHeight: 20 * uiScale,
-                                spacing: 3 * uiScale
-                            )
+                            // Classic Winamp blinks the time readout while paused.
+                            TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                                let paused = !self.audioPlayer.isPlaying && self.audioPlayer.duration > 0
+                                let blinkOff = paused
+                                    && Int(context.date.timeIntervalSinceReferenceDate * 2) % 2 == 1
+                                SevenSegmentDisplay(
+                                    text: self.formatTime(
+                                        self.showRemainingTime
+                                            ? -(self.audioPlayer.duration - self.audioPlayer.currentTime)
+                                            : self.audioPlayer.currentTime,
+                                        showNegative: self.showRemainingTime
+                                    ),
+                                    digitWidth: 13 * uiScale,
+                                    digitHeight: 20 * uiScale,
+                                    spacing: 3 * uiScale
+                                )
+                                .opacity(blinkOff ? 0.15 : 1.0)
+                            }
                             .onTapGesture {
                                 self.showRemainingTime.toggle()
                             }
@@ -151,8 +158,9 @@ struct MainPlayerView: View {
                     .frame(width: 185)
                     .background(Color.black)
                     .overlay(
-                        // 3D inset effect - white highlight on top/left, dark shadow on bottom/right
-                        RoundedRectangle(cornerRadius: 4)
+                        // 3D inset effect - white highlight on top/left, dark shadow on bottom/right.
+                        // Sharp rect: classic Winamp chrome has no rounded corners.
+                        Rectangle()
                             .strokeBorder(
                                 LinearGradient(
                                     colors: [
@@ -167,7 +175,6 @@ struct MainPlayerView: View {
                                 lineWidth: 2
                             )
                     )
-                    .cornerRadius(4)
 
                     // RIGHT: Song info, bitrate, sliders, and buttons
                     VStack(spacing: 4) {
@@ -185,7 +192,6 @@ struct MainPlayerView: View {
                             .frame(height: 24)
                             .frame(maxWidth: .infinity)
                             .background(Color(red: 0.1, green: 0.12, blue: 0.18))
-                            .cornerRadius(3)
                         } else {
                             // Normal song title display
                             AnimatedSongDisplay(
@@ -196,7 +202,6 @@ struct MainPlayerView: View {
                             )
                             .frame(height: 24)
                             .background(Color(red: 0.1, green: 0.12, blue: 0.18))
-                            .cornerRadius(3)
                         }
 
                         // Bitrate and format info row
@@ -210,7 +215,7 @@ struct MainPlayerView: View {
                                 .padding(.vertical, 2)
                                 .background(Color.black)
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: 3)
+                                    Rectangle()
                                         .strokeBorder(
                                             LinearGradient(
                                                 colors: [
@@ -223,7 +228,6 @@ struct MainPlayerView: View {
                                             lineWidth: 1
                                         )
                                 )
-                                .cornerRadius(3)
 
                             Text("kbps")
                                 .winampFont(size: 8, scale: uiScale)
@@ -238,7 +242,7 @@ struct MainPlayerView: View {
                                 .padding(.vertical, 2)
                                 .background(Color.black)
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: 3)
+                                    Rectangle()
                                         .strokeBorder(
                                             LinearGradient(
                                                 colors: [
@@ -251,7 +255,6 @@ struct MainPlayerView: View {
                                             lineWidth: 1
                                         )
                                 )
-                                .cornerRadius(3)
 
                             Text("kHz")
                                 .winampFont(size: 8, scale: uiScale)

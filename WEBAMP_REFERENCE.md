@@ -92,7 +92,7 @@ External references Webamp cites: [skinspecs.pdf](https://github.com/captbariton
 - Normal text: `#00FF00`
 - Current text: `#FFFFFF`
 - Background: `#000000`
-- Selected background: `#0000FF` (classic blue bar)
+- Selected background: `#0000C6` (classic blue bar; PLEDIT.TXT value — *not* pure `#0000FF`)
 - Font: Arial (bitmap in skin; we use JetBrains Mono / seven-segment)
 
 **VISCOLOR:** 24 RGB entries for visualizer and EQ graph dots (indices 0–1 = background/foreground).
@@ -136,10 +136,10 @@ External references Webamp cites: [skinspecs.pdf](https://github.com/captbariton
 | Main player body height | 116 (incl. title) | **160** body + 14 title |
 | Title bar | 14 | 14 ✓ |
 | Shade mode | 14 px bar | Custom row below title (~50 px content) |
-| Transport buttons | 23 × 18 | **31 × 24** in `MainPlayerView` |
+| Transport buttons | 23 × 18 | **31 × 24** in `MainPlayerView` (silver bevel + vector glyphs) |
 | EQ/PL toggles | 23 × 12 | **24 × 20** (`ModernToggleButtonWithLight`) |
 | Playlist row | 13 px | **19 px** |
-| Position bar | 248 × 10 flat + thumb | Rounded rectangle, ~20 px tall |
+| Position bar | 248 × 10 flat + thumb | Flat recessed trough + 29-px notched thumb ✓ |
 | Visualizer | 76 × 16 | ~185 × 42 block |
 | Typography | 5 × 6 / 9 × 13 bitmap | JetBrains Mono 8–14 pt, system fonts in places |
 | Skin sprites in live UI | Bitmap everywhere | Mostly vector / SwiftUI-drawn |
