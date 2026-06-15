@@ -1,8 +1,10 @@
+import AppKit
 import AVFoundation
 import Combine
 import Foundation
 import MediaPlayer
 import os
+import UniformTypeIdentifiers
 
 private let audioLogger = Logger(subsystem: "com.winamp.macos", category: "AudioEngine")
 
@@ -28,6 +30,8 @@ class AudioPlayer: NSObject, ObservableObject {
     @Published var eqPreampValue: Float = 0
     @Published var eqEnabled: Bool = true
     @Published var eqAutoEnabled: Bool = false
+    /// Bumps whenever the stored preset list changes, so EQ views re-read `eqPresets()`.
+    @Published private(set) var eqPresetsRevision = 0
     @Published private(set) var engineIsRunning = false
     private var manualPreampValue: Float = 0
 
@@ -719,6 +723,52 @@ class AudioPlayer: NSObject, ObservableObject {
 
     func eqPresets() -> [EQPreset] {
         self.eqSettingsStore.loadPresets()
+    }
+
+    /// Present an open panel for `.eqf`/`.q1` files, import their presets, persist
+    /// them alongside the existing list, and apply the first imported preset.
+    func importEQFPresets() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = ["eqf", "q1"].compactMap { UTType(filenameExtension: $0) }
+        panel.allowsOtherFileTypes = true
+        panel.message = "Choose a Winamp equalizer preset file (.eqf or .q1)"
+
+        panel.begin { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                self.importEQF(from: url)
+            }
+        }
+    }
+
+    /// Import presets from an `.eqf`/`.q1` file URL (no UI). Returns the imported presets.
+    @discardableResult
+    func importEQF(from url: URL) -> [EQPreset] {
+        let needsScope = url.startAccessingSecurityScopedResource()
+        defer { if needsScope { url.stopAccessingSecurityScopedResource() } }
+
+        guard let data = try? Data(contentsOf: url),
+              let imported = try? EQFParser.parse(data), !imported.isEmpty
+        else {
+            audioLogger.error("Failed to import .eqf presets from \(url.lastPathComponent, privacy: .public)")
+            return []
+        }
+
+        // Merge: keep existing presets, append imported ones (dedupe by name).
+        var presets = self.eqSettingsStore.loadPresets()
+        let existingNames = Set(presets.map { $0.name.lowercased() })
+        let fresh = imported.filter { !existingNames.contains($0.name.lowercased()) }
+        presets.append(contentsOf: fresh)
+        self.eqSettingsStore.savePresets(presets)
+        self.eqPresetsRevision += 1
+
+        if let first = imported.first {
+            self.applyEQPreset(first)
+        }
+        return imported
     }
 
     private func startTimer() {

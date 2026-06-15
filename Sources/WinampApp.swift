@@ -63,6 +63,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private weak var audioPlayer: AudioPlayer?
     private weak var playlistManager: PlaylistManager?
+    private var keyboardEventMonitor: Any?
+    private var clickEventMonitor: Any?
 
     func bind(audioPlayer: AudioPlayer, playlistManager: PlaylistManager) {
         self.audioPlayer = audioPlayer
@@ -72,6 +74,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_: Notification) {
         // Window chrome is applied in ContentView.setupWindow().
         guard !Self.isRunningUnderTest else { return }
+        self.installKeyboardShortcuts()
+        self.installSearchDismissOnClickOutside()
+    }
+
+    private func installSearchDismissOnClickOutside() {
+        self.clickEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+            guard let window = event.window, window.isKeyWindow,
+                  let contentView = window.contentView else { return event }
+
+            let locationInContent = contentView.convert(event.locationInWindow, from: nil)
+            let hitView = contentView.hitTest(locationInContent)
+            MainActor.assumeIsolated {
+                WinampPlaylistSearchFocus.handleClick(at: hitView)
+            }
+            return event
+        }
+    }
+
+    private func installKeyboardShortcuts() {
+        self.keyboardEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let window = NSApp.keyWindow, window.isKeyWindow else { return event }
+
+            if event.keyCode == 53,
+               event.modifierFlags.intersection([.command, .option, .control]).isEmpty {
+                var dismissed = false
+                MainActor.assumeIsolated {
+                    if WinampPlaylistSearchFocus.isActive {
+                        WinampPlaylistSearchFocus.dismissActive()
+                        dismissed = true
+                    }
+                }
+                if dismissed { return nil }
+            }
+
+            guard event.keyCode == 49,
+                  event.modifierFlags.intersection([.command, .option, .control]).isEmpty
+            else {
+                return event
+            }
+
+            if let responder = window.firstResponder {
+                if let textField = responder as? NSTextField, !textField.stringValue.isEmpty {
+                    return event
+                }
+                if responder is NSTextView {
+                    return event
+                }
+            }
+
+            guard let self else { return event }
+
+            let player = self.audioPlayer
+            MainActor.assumeIsolated {
+                player?.togglePlayPause()
+            }
+            return nil
+        }
     }
 
     func applicationDidResignActive(_: Notification) {
@@ -86,6 +145,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_: Notification) {
         guard !Self.isRunningUnderTest else { return }
+        if let monitor = self.keyboardEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            self.keyboardEventMonitor = nil
+        }
+        if let monitor = self.clickEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            self.clickEventMonitor = nil
+        }
         MainActor.assumeIsolated {
             DevelopmentSessionPersistence.saveCurrentSession(
                 audioPlayer: self.audioPlayer ?? .shared,

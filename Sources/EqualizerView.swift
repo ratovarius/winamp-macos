@@ -87,6 +87,10 @@ struct EqualizerView: View {
                                 self.audioPlayer.applyEQPreset(preset)
                             }
                         }
+                        Divider()
+                        Button("Load EQF…") {
+                            self.audioPlayer.importEQFPresets()
+                        }
                     } label: {
                         Text("PRESETS")
                             .winampFont(size: 8, weight: .bold, scale: s)

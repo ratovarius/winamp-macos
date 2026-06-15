@@ -1,6 +1,81 @@
 import AppKit
 import SwiftUI
 
+/// Tracks the playlist search field so clicks elsewhere or Escape restore playback shortcuts.
+@MainActor
+enum WinampPlaylistSearchFocus {
+    static let containerIdentifier = NSUserInterfaceItemIdentifier("WinampSearchFieldContainer")
+
+    private static weak var activeField: ClickToFocusSearchField?
+
+    fileprivate static func registerActive(_ field: ClickToFocusSearchField) {
+        self.activeField = field
+    }
+
+    fileprivate static func unregisterActive(_ field: ClickToFocusSearchField) {
+        if self.activeField === field {
+            self.activeField = nil
+        }
+    }
+
+    static var isActive: Bool {
+        self.activeField != nil
+    }
+
+    static func contains(_ view: NSView?) -> Bool {
+        var current = view
+        while let view = current {
+            if view is ClickToFocusSearchField || view.identifier == self.containerIdentifier {
+                return true
+            }
+            current = view.superview
+        }
+        return false
+    }
+
+    static func dismissActive() {
+        guard let field = self.activeField, let window = field.window else { return }
+        window.makeFirstResponder(nil)
+    }
+
+    static func handleClick(at hitView: NSView?) {
+        guard self.isActive, !self.contains(hitView) else { return }
+        self.dismissActive()
+    }
+}
+
+/// Avoids stealing keyboard focus when the window first opens; click to edit.
+private final class ClickToFocusSearchField: NSTextField {
+    private var userRequestedFocus = false
+
+    override var acceptsFirstResponder: Bool {
+        self.userRequestedFocus
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became {
+            WinampPlaylistSearchFocus.registerActive(self)
+        }
+        return became
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        self.userRequestedFocus = true
+        self.window?.makeFirstResponder(self)
+        super.mouseDown(with: event)
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned {
+            self.userRequestedFocus = false
+            WinampPlaylistSearchFocus.unregisterActive(self)
+        }
+        return resigned
+    }
+}
+
 /// Inset LCD-style search field without the macOS blue focus ring.
 struct WinampSearchField: NSViewRepresentable {
     @Binding var text: String
@@ -13,8 +88,9 @@ struct WinampSearchField: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let container = NSView(frame: .zero)
         container.wantsLayer = true
+        container.identifier = WinampPlaylistSearchFocus.containerIdentifier
 
-        let field = NSTextField(string: "")
+        let field = ClickToFocusSearchField(string: "")
         field.isBordered = false
         field.isBezeled = false
         field.drawsBackground = false
