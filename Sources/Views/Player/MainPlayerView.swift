@@ -21,6 +21,10 @@ struct MainPlayerView: View {
     @State private var autoToggleMode = false
     @State private var autoToggleTimer: Timer?
 
+    private var displayTrack: Track? {
+        self.playlistManager.currentTrack ?? self.audioPlayer.currentTrack
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ClassicTitleBar(isShadeMode: self.$isShadeMode)
@@ -195,9 +199,9 @@ struct MainPlayerView: View {
                         } else {
                             // Normal song title display
                             AnimatedSongDisplay(
-                                artist: self.playlistManager.currentTrack?.artist ?? "DJ Mike Llama",
-                                title: self.playlistManager.currentTrack?.title ?? "Llama Whippin' Intro",
-                                trackId: self.playlistManager.currentTrack?.id,
+                                artist: self.displayTrack?.artist ?? "DJ Mike Llama",
+                                title: self.displayTrack?.title ?? "Llama Whippin' Intro",
+                                trackId: self.displayTrack?.id,
                                 displayMode: self.$songDisplayMode
                             )
                             .frame(height: 24)
