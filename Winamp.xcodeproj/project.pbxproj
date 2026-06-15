@@ -11,38 +11,9 @@
 		A10000012 /* startup.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = A20000013 /* startup.mp3 */; };
 		A10000049 /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A20000049 /* JetBrainsMono-Regular.ttf */; };
 		A10000050 /* JetBrainsMono-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A20000050 /* JetBrainsMono-Bold.ttf */; };
-		B10000001 /* LyricsParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000001 /* LyricsParserTests.swift */; };
-		B10000002 /* M3UParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000002 /* M3UParserTests.swift */; };
-		B10000003 /* TrackMetadataParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000003 /* TrackMetadataParserTests.swift */; };
-		B10000004 /* PlaylistManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000004 /* PlaylistManagerTests.swift */; };
-		B10000005 /* M3UPlaylistIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000005 /* M3UPlaylistIntegrationTests.swift */; };
-		B10000006 /* AudioPlayerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000006 /* AudioPlayerTests.swift */; };
-		B10000010 /* MockAudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010 /* MockAudioPlayer.swift */; };
 		B10000007 /* sample.m3u in Resources */ = {isa = PBXBuildFile; fileRef = B20000007 /* sample.m3u */; };
 		B10000008 /* sample.lrc in Resources */ = {isa = PBXBuildFile; fileRef = B20000008 /* sample.lrc */; };
 		B10000009 /* short.wav in Resources */ = {isa = PBXBuildFile; fileRef = B20000009 /* short.wav */; };
-		B10000011 /* FileSystemHelpersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000011 /* FileSystemHelpersTests.swift */; };
-		B10000012 /* SecurityScopedBookmarkStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000012 /* SecurityScopedBookmarkStoreTests.swift */; };
-		B10000013 /* PlaylistFileServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000013 /* PlaylistFileServiceTests.swift */; };
-		B10000014 /* LyricsAPIParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000014 /* LyricsAPIParserTests.swift */; };
-		B10000015 /* PlaylistImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000015 /* PlaylistImportTests.swift */; };
-		B10000016 /* EQSettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000016 /* EQSettingsStoreTests.swift */; };
-		B10000017 /* FFTSpectrumAnalyzerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000017 /* FFTSpectrumAnalyzerTests.swift */; };
-		B10000018 /* XCTestCase+MainQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000018 /* XCTestCase+MainQueue.swift */; };
-		B10000019 /* PlaylistStateStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000019 /* PlaylistStateStoreTests.swift */; };
-		B10000020 /* AudioFormatInfoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000020 /* AudioFormatInfoTests.swift */; };
-		B10000021 /* PlaybackIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000021 /* PlaybackIntegrationTests.swift */; };
-		B10000022 /* TrackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000022 /* TrackTests.swift */; };
-		B10000023 /* VisualizationPresetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000023 /* VisualizationPresetTests.swift */; };
-		B10000024 /* SpectrumViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000024 /* SpectrumViewTests.swift */; };
-		B10000025 /* DisplayModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000025 /* DisplayModeTests.swift */; };
-		B10000026 /* AudioFeatureBusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000026 /* AudioFeatureBusTests.swift */; };
-		B10000027 /* WaveformRingBufferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000027 /* WaveformRingBufferTests.swift */; };
-		B10000028 /* VisualizationFeatureSmootherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000028 /* VisualizationFeatureSmootherTests.swift */; };
-		B10000029 /* SpectrumAutoLevelerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000029 /* SpectrumAutoLevelerTests.swift */; };
-		B10000030 /* VisualizationDisplayTimingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000030 /* VisualizationDisplayTimingTests.swift */; };
-		B10000031 /* DevelopmentSessionStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000031 /* DevelopmentSessionStoreTests.swift */; };
-		B10000032 /* WinampEQBandsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000032 /* WinampEQBandsTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -53,38 +24,9 @@
 		A20000049 /* JetBrainsMono-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = JetBrainsMono-Regular.ttf; sourceTree = "<group>"; };
 		A20000050 /* JetBrainsMono-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = JetBrainsMono-Bold.ttf; sourceTree = "<group>"; };
 		B10000000 /* WinampTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WinampTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		B20000001 /* LyricsParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricsParserTests.swift; sourceTree = "<group>"; };
-		B20000002 /* M3UParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M3UParserTests.swift; sourceTree = "<group>"; };
-		B20000003 /* TrackMetadataParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackMetadataParserTests.swift; sourceTree = "<group>"; };
-		B20000004 /* PlaylistManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistManagerTests.swift; sourceTree = "<group>"; };
-		B20000005 /* M3UPlaylistIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M3UPlaylistIntegrationTests.swift; sourceTree = "<group>"; };
-		B20000006 /* AudioPlayerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayerTests.swift; sourceTree = "<group>"; };
-		B20000010 /* MockAudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockAudioPlayer.swift; sourceTree = "<group>"; };
 		B20000007 /* sample.m3u */ = {isa = PBXFileReference; lastKnownFileType = text; path = sample.m3u; sourceTree = "<group>"; };
 		B20000008 /* sample.lrc */ = {isa = PBXFileReference; lastKnownFileType = text; path = sample.lrc; sourceTree = "<group>"; };
 		B20000009 /* short.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = short.wav; sourceTree = "<group>"; };
-		B20000011 /* FileSystemHelpersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSystemHelpersTests.swift; sourceTree = "<group>"; };
-		B20000012 /* SecurityScopedBookmarkStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecurityScopedBookmarkStoreTests.swift; sourceTree = "<group>"; };
-		B20000013 /* PlaylistFileServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistFileServiceTests.swift; sourceTree = "<group>"; };
-		B20000014 /* LyricsAPIParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricsAPIParserTests.swift; sourceTree = "<group>"; };
-		B20000015 /* PlaylistImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistImportTests.swift; sourceTree = "<group>"; };
-		B20000016 /* EQSettingsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EQSettingsStoreTests.swift; sourceTree = "<group>"; };
-		B20000017 /* FFTSpectrumAnalyzerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FFTSpectrumAnalyzerTests.swift; sourceTree = "<group>"; };
-		B20000018 /* XCTestCase+MainQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "XCTestCase+MainQueue.swift"; sourceTree = "<group>"; };
-		B20000019 /* PlaylistStateStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistStateStoreTests.swift; sourceTree = "<group>"; };
-		B20000020 /* AudioFormatInfoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioFormatInfoTests.swift; sourceTree = "<group>"; };
-		B20000021 /* PlaybackIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackIntegrationTests.swift; sourceTree = "<group>"; };
-		B20000022 /* TrackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackTests.swift; sourceTree = "<group>"; };
-		B20000023 /* VisualizationPresetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizationPresetTests.swift; sourceTree = "<group>"; };
-		B20000024 /* SpectrumViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpectrumViewTests.swift; sourceTree = "<group>"; };
-		B20000025 /* DisplayModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayModeTests.swift; sourceTree = "<group>"; };
-		B20000026 /* AudioFeatureBusTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioFeatureBusTests.swift; sourceTree = "<group>"; };
-		B20000027 /* WaveformRingBufferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaveformRingBufferTests.swift; sourceTree = "<group>"; };
-		B20000028 /* VisualizationFeatureSmootherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizationFeatureSmootherTests.swift; sourceTree = "<group>"; };
-		B20000029 /* SpectrumAutoLevelerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpectrumAutoLevelerTests.swift; sourceTree = "<group>"; };
-		B20000030 /* VisualizationDisplayTimingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualizationDisplayTimingTests.swift; sourceTree = "<group>"; };
-		B20000031 /* DevelopmentSessionStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopmentSessionStoreTests.swift; sourceTree = "<group>"; };
-		B20000032 /* WinampEQBandsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WinampEQBandsTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -95,6 +37,15 @@
 			explicitFolders = (
 			);
 			path = Sources;
+			sourceTree = "<group>";
+		};
+		B40000002 /* WinampTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = WinampTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -165,42 +116,6 @@
 			path = Tests;
 			sourceTree = "<group>";
 		};
-		B40000002 /* WinampTests */ = {
-			isa = PBXGroup;
-			children = (
-				B20000001 /* LyricsParserTests.swift */,
-				B20000002 /* M3UParserTests.swift */,
-				B20000003 /* TrackMetadataParserTests.swift */,
-				B20000004 /* PlaylistManagerTests.swift */,
-				B20000005 /* M3UPlaylistIntegrationTests.swift */,
-				B20000006 /* AudioPlayerTests.swift */,
-				B20000010 /* MockAudioPlayer.swift */,
-				B20000011 /* FileSystemHelpersTests.swift */,
-				B20000012 /* SecurityScopedBookmarkStoreTests.swift */,
-				B20000013 /* PlaylistFileServiceTests.swift */,
-				B20000014 /* LyricsAPIParserTests.swift */,
-				B20000015 /* PlaylistImportTests.swift */,
-				B20000016 /* EQSettingsStoreTests.swift */,
-				B20000017 /* FFTSpectrumAnalyzerTests.swift */,
-				B20000018 /* XCTestCase+MainQueue.swift */,
-				B20000019 /* PlaylistStateStoreTests.swift */,
-				B20000020 /* AudioFormatInfoTests.swift */,
-				B20000021 /* PlaybackIntegrationTests.swift */,
-				B20000022 /* TrackTests.swift */,
-				B20000023 /* VisualizationPresetTests.swift */,
-				B20000024 /* SpectrumViewTests.swift */,
-				B20000025 /* DisplayModeTests.swift */,
-				B20000026 /* AudioFeatureBusTests.swift */,
-				B20000027 /* WaveformRingBufferTests.swift */,
-				B20000028 /* VisualizationFeatureSmootherTests.swift */,
-				B20000029 /* SpectrumAutoLevelerTests.swift */,
-				B20000030 /* VisualizationDisplayTimingTests.swift */,
-				B20000031 /* DevelopmentSessionStoreTests.swift */,
-				B20000032 /* WinampEQBandsTests.swift */,
-			);
-			path = WinampTests;
-			sourceTree = "<group>";
-		};
 		B40000003 /* Fixtures */ = {
 			isa = PBXGroup;
 			children = (
@@ -246,6 +161,9 @@
 			);
 			dependencies = (
 				B90000001 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				B40000002 /* WinampTests */,
 			);
 			name = WinampTests;
 			productName = WinampTests;
@@ -316,35 +234,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B10000001 /* LyricsParserTests.swift in Sources */,
-				B10000002 /* M3UParserTests.swift in Sources */,
-				B10000003 /* TrackMetadataParserTests.swift in Sources */,
-				B10000004 /* PlaylistManagerTests.swift in Sources */,
-				B10000005 /* M3UPlaylistIntegrationTests.swift in Sources */,
-				B10000006 /* AudioPlayerTests.swift in Sources */,
-				B10000010 /* MockAudioPlayer.swift in Sources */,
-				B10000011 /* FileSystemHelpersTests.swift in Sources */,
-				B10000012 /* SecurityScopedBookmarkStoreTests.swift in Sources */,
-				B10000013 /* PlaylistFileServiceTests.swift in Sources */,
-				B10000014 /* LyricsAPIParserTests.swift in Sources */,
-				B10000015 /* PlaylistImportTests.swift in Sources */,
-				B10000016 /* EQSettingsStoreTests.swift in Sources */,
-				B10000017 /* FFTSpectrumAnalyzerTests.swift in Sources */,
-				B10000018 /* XCTestCase+MainQueue.swift in Sources */,
-				B10000019 /* PlaylistStateStoreTests.swift in Sources */,
-				B10000020 /* AudioFormatInfoTests.swift in Sources */,
-				B10000021 /* PlaybackIntegrationTests.swift in Sources */,
-				B10000022 /* TrackTests.swift in Sources */,
-				B10000023 /* VisualizationPresetTests.swift in Sources */,
-				B10000024 /* SpectrumViewTests.swift in Sources */,
-				B10000025 /* DisplayModeTests.swift in Sources */,
-				B10000026 /* AudioFeatureBusTests.swift in Sources */,
-				B10000027 /* WaveformRingBufferTests.swift in Sources */,
-				B10000028 /* VisualizationFeatureSmootherTests.swift in Sources */,
-				B10000029 /* SpectrumAutoLevelerTests.swift in Sources */,
-				B10000030 /* VisualizationDisplayTimingTests.swift in Sources */,
-				B10000031 /* DevelopmentSessionStoreTests.swift in Sources */,
-				B10000032 /* WinampEQBandsTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
