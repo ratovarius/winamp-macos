@@ -240,6 +240,66 @@ For behavior checks (shade toggle, double-click title bar, playlist resize snapp
 
 ---
 
+## Non-UI ideas worth borrowing (not yet implemented)
+
+Beyond layout/colors, Webamp's non-UI packages and logic suggest several features. Each was checked
+against the current fork (as of this review). **None are implemented yet** — this is a backlog, ordered
+by value/effort. Source paths are in the Webamp repo.
+
+### 1. `.eqf` equalizer-preset import/export — *recommended first*
+
+- **What:** Winamp's `.eqf` (and `.q1`) files store EQ presets (preamp + 10 bands, each `1–64`).
+  Webamp ships a standalone, documented, MIT parser: `packages/winamp-eqf/` (`parser`/`creator`).
+- **Gap:** the fork has an internal `EQPreset` model and `AudioPlayer.eqPresets()` /
+  `EQSettingsStore`, but **no `.eqf` file interop** — can't load the thousands of existing `.eqf`
+  presets or share with real Winamp.
+- **Why it fits:** the format is a tiny fixed binary layout (header string + 11 bytes/preset); maps
+  cleanly to the existing model. High "authentic Winamp" payoff, self-contained, low risk.
+- **Sketch:** add `Sources/Audio/EQFParser.swift` (parse/serialize `ArrayBuffer`↔`[EQPreset]`),
+  wire "Load Preset…/Save Preset…" into the PRESETS menu via `NSOpenPanel`/`NSSavePanel`.
+- **Value/effort:** High / Low.
+
+### 2. Keyboard-shortcut parity
+
+- **What:** Webamp's `packages/webamp/js/hotkeys.ts` is the full classic Winamp key map.
+- **Gap:** fork has ~6 shortcuts (`x`/`v`/`z`/`b` transport, `⌘L`/`⌘⇧L` add). Missing notably:
+  - **`Ctrl+T` — toggle time mode (elapsed/remaining).** We already have the `showRemainingTime`
+    state; just needs a binding. Easiest win.
+  - `Ctrl+R` reverse playlist, `Ctrl+D` double-size, `Alt+W` window toggles, numeric volume keys.
+- **Value/effort:** Medium / Low.
+
+### 3. NULLSOFT easter egg
+
+- **What:** `hotkeys.ts` watches for the typed sequence `N-U-L-L-S-O-F-T` and fires an easter egg.
+- **Why:** pure flavor, but quintessential Winamp. ~15 lines via an `NSEvent` key monitor.
+- **Value/effort:** Low / Trivial.
+
+### 4. `.wsz` classic skin loading — *bigger direction, not a quick win*
+
+- **What:** Webamp's core loads real `.wsz` skins (zipped BMPs + `pledit.txt`/`viscolor.txt`/
+  `region.txt`). Key files: `skinParserUtils.ts`, `skinSprites.ts`, `regionParser.ts`,
+  `skinSelectors.ts`.
+- **Gap:** the fork is procedural/vector; `WinampSkinSprites` scaffolding exists but no `.wsz`
+  parsing. Supporting it would unlock the entire classic-skin ecosystem.
+- **Tension:** large effort (unzip, sprite-atlas wiring, region masks, per-skin color tables) and
+  somewhat against this fork's "own procedural chrome" philosophy. Treat as a roadmap decision, not
+  polish.
+- **Value/effort:** High / High.
+
+### Already covered in this fork (no action needed)
+
+- **EQ presets** — `AudioPlayer.eqPresets()` + `EQSettingsStore` (built-in presets exist).
+- **Media keys / Now Playing** — `AudioPlayer` uses `MPRemoteCommand` / `MPNowPlayingInfoCenter`.
+- **Visualizer** — native Metal engine (`Sources/Visualization/`, `Shaders/`) with the VISCOLOR ramp.
+
+### Not relevant to a native app
+
+Webamp's Redux store/reducers/action-creators (`store.ts`, `reducers/`, `actionCreators/`) and the
+butterchurn Milkdrop-preset engine are web-architecture specifics; the SwiftUI/AVFoundation/Metal
+stack already covers these concerns idiomatically.
+
+---
+
 ## Philosophy
 
 This fork is a **native macOS music player** that preserves Winamp's compact floating-window workflow — not a Webamp port. Webamp informs:
