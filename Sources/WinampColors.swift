@@ -1,52 +1,84 @@
 import SwiftUI
 
-struct WinampColors {
-    // Modern Winamp color scheme (darker, sleeker)
+enum WinampColors {
+    /// Classic Winamp 2.x "base" skin palette — slate blue-grey metallic chrome.
     static let background = Color(red: 0, green: 0, blue: 0)
-    
-    // Title bar colors (darker blue-grey)
-    static let titleBar = Color(red: 30/255, green: 40/255, blue: 60/255)
-    static let titleBarInactive = Color(red: 40/255, green: 40/255, blue: 45/255)
-    static let titleBarHighlight = Color(red: 40/255, green: 55/255, blue: 80/255)
-    
+
+    // Title bar colors (lighter steel-blue chrome with subtle pinstripe gradient)
+    static let titleBar = Color(red: 60 / 255, green: 68 / 255, blue: 92 / 255)
+    static let titleBarInactive = Color(red: 52 / 255, green: 56 / 255, blue: 70 / 255)
+    static let titleBarHighlight = Color(red: 86 / 255, green: 94 / 255, blue: 118 / 255)
+
     // Display/LCD colors (dark with bright green text)
-    static let displayBg = Color(red: 8/255, green: 20/255, blue: 16/255)
+    static let displayBg = Color(red: 8 / 255, green: 20 / 255, blue: 16 / 255)
     static let displayText = Color(red: 0, green: 1.0, blue: 0.5)
     static let displayInactive = Color(red: 0, green: 0.3, blue: 0.2)
-    
-    // Main window background (darker grey-blue)
-    static let mainBg = Color(red: 50/255, green: 55/255, blue: 70/255)
-    static let mainBgLight = Color(red: 65/255, green: 70/255, blue: 85/255)
-    static let mainBgDark = Color(red: 35/255, green: 40/255, blue: 55/255)
-    
-    // Button colors (darker, more modern)
-    static let buttonFace = Color(red: 70/255, green: 75/255, blue: 90/255)
-    static let buttonLight = Color(red: 90/255, green: 95/255, blue: 110/255)
-    static let buttonDark = Color(red: 50/255, green: 55/255, blue: 70/255)
-    static let buttonPressed = Color(red: 40/255, green: 45/255, blue: 60/255)
-    static let buttonHover = Color(red: 80/255, green: 85/255, blue: 100/255)
-    
-    // Playlist colors
+
+    // Main window background (slate blue-grey, the signature Winamp chrome)
+    static let mainBg = Color(red: 74 / 255, green: 82 / 255, blue: 107 / 255)
+    static let mainBgLight = Color(red: 92 / 255, green: 100 / 255, blue: 126 / 255)
+    static let mainBgDark = Color(red: 52 / 255, green: 59 / 255, blue: 82 / 255)
+
+    // Button colors (raised metallic blue-grey with crisp bevels)
+    static let buttonFace = Color(red: 96 / 255, green: 104 / 255, blue: 128 / 255)
+    static let buttonLight = Color(red: 150 / 255, green: 158 / 255, blue: 180 / 255)
+    static let buttonDark = Color(red: 44 / 255, green: 50 / 255, blue: 70 / 255)
+    static let buttonPressed = Color(red: 60 / 255, green: 66 / 255, blue: 88 / 255)
+    static let buttonHover = Color(red: 110 / 255, green: 118 / 255, blue: 142 / 255)
+
+    // Playlist colors (classic: green text on black, solid blue selection bar)
     static let playlistBg = Color(red: 0, green: 0, blue: 0)
     static let playlistText = Color(red: 0, green: 1.0, blue: 0.5)
-    static let playlistSelected = Color(red: 0, green: 0.4, blue: 0.2)
-    static let playlistCurrentTrack = Color(red: 0, green: 0.9, blue: 0.45)
-    static let playlistCurrentTrackBg = Color(red: 0.1, green: 0.2, blue: 0.5) // Dark blue background for playing track
-    
+    static let playlistSelected = Color(red: 0, green: 0, blue: 0.78) // Solid Winamp blue selection bar
+    static let playlistCurrentTrack = Color.white // Playing track text is white
+    static let playlistCurrentTrackBg = Color(red: 0, green: 0, blue: 0.78) // Blue background for playing track
+
     // Equalizer colors (classic Winamp orange/yellow gradient)
-    static let eqSliderBg = Color(red: 20/255, green: 25/255, blue: 35/255)
-    static let eqSliderTop = Color(red: 1.0, green: 0.8, blue: 0.2) // Yellow at top
-    static let eqSliderBottom = Color(red: 1.0, green: 0.4, blue: 0.0) // Orange at bottom
-    static let eqFrame = Color(red: 60/255, green: 65/255, blue: 80/255)
-    
+    static let eqSliderBg = Color(red: 20 / 255, green: 25 / 255, blue: 35 / 255)
+    static let eqSliderGreen = Color(red: 0, green: 0.58, blue: 0.08)
+    static let eqSliderYellow = Color(red: 0.95, green: 0.82, blue: 0.05)
+    static let eqSliderOrange = Color(red: 1.0, green: 0.45, blue: 0.0)
+    static let eqSliderRed = Color(red: 1.0, green: 0.12, blue: 0.05)
+    static let eqSliderTop = Color(red: 1.0, green: 0.8, blue: 0.2)
+    static let eqSliderBottom = Color(red: 1.0, green: 0.4, blue: 0.0)
+    static let eqCurve = Color(red: 1.0, green: 0.48, blue: 0.05)
+    static let eqCurveHighlight = Color(red: 1.0, green: 0.72, blue: 0.18)
+    static let eqFrame = Color(red: 60 / 255, green: 65 / 255, blue: 80 / 255)
+
+    /// Maps a normalized level (0 = low/bottom/left, 1 = high/top/right) to the classic Winamp green→red scale.
+    static func levelColor(normalized: CGFloat) -> Color {
+        let n = max(0, min(1, normalized))
+        if n <= 0.45 {
+            let t = n / 0.45
+            return Color(
+                red: t * 0.95,
+                green: 0.58 + t * 0.24,
+                blue: 0.08 - t * 0.03
+            )
+        }
+        if n <= 0.72 {
+            let t = (n - 0.45) / 0.27
+            return Color(
+                red: 0.95 + t * 0.05,
+                green: 0.82 - t * 0.37,
+                blue: 0.05 + t * 0.0
+            )
+        }
+        let t = (n - 0.72) / 0.28
+        return Color(
+            red: 1.0,
+            green: 0.45 - t * 0.33,
+            blue: 0.0 + t * 0.05
+        )
+    }
+
     // Spectrum/Visualizer
     static let spectrumBg = Color(red: 0, green: 0, blue: 0)
     static let spectrumDot = Color(red: 0, green: 1.0, blue: 0.5)
     static let spectrumPeak = Color(red: 1.0, green: 0, blue: 0)
-    
-    // Border colors (subtler)
-    static let borderLight = Color(red: 85/255, green: 90/255, blue: 105/255)
-    static let borderDark = Color(red: 30/255, green: 35/255, blue: 50/255)
-    static let borderAccent = Color(red: 60/255, green: 65/255, blue: 80/255)
-}
 
+    // Border colors (crisp metallic bevel highlights/shadows)
+    static let borderLight = Color(red: 150 / 255, green: 158 / 255, blue: 180 / 255)
+    static let borderDark = Color(red: 30 / 255, green: 35 / 255, blue: 50 / 255)
+    static let borderAccent = Color(red: 70 / 255, green: 78 / 255, blue: 100 / 255)
+}

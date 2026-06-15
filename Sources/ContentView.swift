@@ -1,75 +1,133 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 
 struct ContentView: View {
+    private static var positionedWindows = Set<ObjectIdentifier>()
+
     @EnvironmentObject var audioPlayer: AudioPlayer
     @EnvironmentObject var playlistManager: PlaylistManager
+    @EnvironmentObject var uiScale: WinampUIScale
     @State private var showPlaylist = true
-    @State private var showEqualizer = false
+    @State private var showEqualizer = true
     @State private var isShadeMode = false
     @State private var showVisualization = false
-    @State private var visualizerFullscreen = false
-    @State private var playlistSize: CGSize = CGSize(width: 450, height: 250)
+    @State private var playlistSize: CGSize = .init(
+        width: WinampUIScale.basePanelWidth,
+        height: WinampMetrics.defaultPlaylistHeight
+    )
     @State private var songDisplayMode: DisplayMode = .scrolling
     @State private var showRemainingTime = false
     @State private var playlistMinimized = false
-    
+
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            // Main Winamp player (left side) - hide when visualization is fullscreen
-            if !visualizerFullscreen {
-                VStack(spacing: 0) {
-                    if isShadeMode {
-                        ShadeView(isShadeMode: $isShadeMode, songDisplayMode: $songDisplayMode, showRemainingTime: $showRemainingTime)
-                    } else {
-                        MainPlayerView(showPlaylist: $showPlaylist, showEqualizer: $showEqualizer, isShadeMode: $isShadeMode, showVisualization: $showVisualization, shuffleEnabled: Binding(
-                            get: { playlistManager.shuffleEnabled },
-                            set: { playlistManager.shuffleEnabled = $0 }
-                        ), repeatEnabled: Binding(
-                            get: { playlistManager.repeatEnabled },
-                            set: { playlistManager.repeatEnabled = $0 }
-                        ), songDisplayMode: $songDisplayMode, showRemainingTime: $showRemainingTime)
-                        
-                        if showEqualizer {
-                            EqualizerView()
-                        }
-                    }
-                    
-                    // Playlist remains visible even when main player is in shade mode
-                    if showPlaylist {
-                        PlaylistView(playlistSize: $playlistSize, isMinimized: $playlistMinimized)
+            VStack(spacing: 0) {
+                if let summary = playlistManager.lastRestoreSummary {
+                    PlaylistRestoreNoticeBanner(
+                        message: summary.userMessage,
+                        isCritical: summary.loadedCount == 0,
+                        onDismiss: { self.playlistManager.acknowledgeRestoreSummary() }
+                    )
+                }
+
+                if let saveError = playlistManager.lastSaveErrorMessage {
+                    PlaylistRestoreNoticeBanner(
+                        message: saveError,
+                        isCritical: true,
+                        onDismiss: { self.playlistManager.acknowledgeSaveError() }
+                    )
+                }
+
+                if self.isShadeMode {
+                    ShadeView(
+                        isShadeMode: self.$isShadeMode,
+                        songDisplayMode: self.$songDisplayMode,
+                        showRemainingTime: self.$showRemainingTime
+                    )
+                } else {
+                    MainPlayerView(
+                        showPlaylist: self.$showPlaylist,
+                        showEqualizer: self.$showEqualizer,
+                        isShadeMode: self.$isShadeMode,
+                        showVisualization: self.$showVisualization,
+                        shuffleEnabled: Binding(
+                            get: { self.playlistManager.shuffleEnabled },
+                            set: { self.playlistManager.shuffleEnabled = $0 }
+                        ),
+                        repeatEnabled: Binding(
+                            get: { self.playlistManager.repeatEnabled },
+                            set: { self.playlistManager.repeatEnabled = $0 }
+                        ),
+                        songDisplayMode: self.$songDisplayMode,
+                        showRemainingTime: self.$showRemainingTime
+                    )
+
+                    if self.showEqualizer {
+                        EqualizerView()
                     }
                 }
-                .frame(width: 450)
+
+                if self.showPlaylist {
+                    PlaylistView(playlistSize: self.$playlistSize, isMinimized: self.$playlistMinimized)
+                }
             }
-            
-            // Milkdrop visualization window (right side)
-            if showVisualization {
-                MilkdropVisualizerView(isFullscreen: $visualizerFullscreen)
-                    .frame(width: visualizerFullscreen ? nil : 600, height: visualizerFullscreen ? nil : 450)
-                    .frame(maxWidth: visualizerFullscreen ? .infinity : nil, maxHeight: visualizerFullscreen ? .infinity : nil)
+            .frame(width: self.uiScale.panelWidth)
+            .environment(\.winampUIScale, self.uiScale.scale)
+
+            if self.showVisualization {
+                MilkdropVisualizerView()
+                    .frame(width: 600, height: 450)
             }
         }
-        .fixedSize(horizontal: !visualizerFullscreen, vertical: !visualizerFullscreen) // Only fix size when not fullscreen
-        .background(Color.black)
+        .fixedSize()
+        .background(WinampColors.titleBar)
+        .overlay(
+            // Raised outer bevel framing the whole stack (classic window edge).
+            Rectangle()
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            WinampColors.borderLight.opacity(0.9),
+                            WinampColors.borderLight.opacity(0.3),
+                            WinampColors.borderDark.opacity(0.5),
+                            WinampColors.borderDark.opacity(0.9),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+                .allowsHitTesting(false)
+        )
         .ignoresSafeArea(.all)
         .onAppear {
-            setupWindow()
-            loadStartupSound()
-            loadPlaylistSize()
-            loadDisplayMode()
-            loadTimeDisplayPreference()
-            setupWindowNotifications()
+            self.bindPlaybackCoordination()
+            self.setupWindow()
+            self.loadStartupSound()
+            self.loadPlaylistSize()
+            self.loadDisplayMode()
+            self.loadTimeDisplayPreference()
         }
-        .onChange(of: songDisplayMode) { newMode in
-            saveDisplayMode(newMode)
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
+            guard let window = notification.object as? NSWindow else { return }
+            self.configureWindow(window)
         }
-        .onChange(of: showRemainingTime) { newValue in
-            saveTimeDisplayPreference(newValue)
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMiniaturizeNotification)) { _ in
+            if self.showVisualization {
+                self.showVisualization = false
+            }
         }
-        .onChange(of: isShadeMode) { newValue in
+        .onChange(of: self.uiScale.level) { _ in
+            self.playlistSize = CGSize(width: self.uiScale.panelWidth, height: self.playlistSize.height)
+        }
+        .onChange(of: self.songDisplayMode) { newMode in
+            self.saveDisplayMode(newMode)
+        }
+        .onChange(of: self.showRemainingTime) { newValue in
+            self.saveTimeDisplayPreference(newValue)
+        }
+        .onChange(of: self.isShadeMode) { newValue in
             if let window = NSApplication.shared.windows.first {
-                // When in shade mode, keep window on top of all other windows
                 if newValue {
                     window.level = .floating
                     window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -80,145 +138,183 @@ struct ContentView: View {
             }
         }
     }
-    
+
+    private func bindPlaybackCoordination() {
+        self.audioPlayer.onTrackFinished = { [weak playlistManager] in
+            playlistManager?.next()
+        }
+        self.audioPlayer.onNextTrackRequested = { [weak playlistManager] in
+            playlistManager?.next()
+        }
+        self.audioPlayer.onPreviousTrackRequested = { [weak playlistManager] in
+            playlistManager?.previous()
+        }
+    }
+
     private func setupWindow() {
         // Get all windows and configure them to be borderless
-        DispatchQueue.main.async {
+        Task { @MainActor in
             for window in NSApplication.shared.windows {
-                configureWindow(window)
+                self.configureWindow(window)
             }
         }
     }
-    
+
     private func loadStartupSound() {
+        guard self.playlistManager.shouldPlayStartupSoundOnLaunch else { return }
+
         // Load the startup.mp3 from the app bundle
         guard let startupURL = Bundle.main.url(forResource: "startup", withExtension: "mp3") else {
             return
         }
-        
-        // Create a track for the startup sound
-        let startupTrack = Track(url: startupURL)
-        
-        // Play it directly without adding to playlist
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            audioPlayer.loadTrack(startupTrack)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                audioPlayer.play()
+
+        // Create a track for the startup sound off the main actor.
+        Task { @MainActor in
+            let startupTrack = await Track.load(from: startupURL)
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            self.audioPlayer.loadTrack(startupTrack) { success in
+                if success {
+                    self.audioPlayer.play()
+                }
             }
         }
     }
-    
+
     private func configureWindow(_ window: NSWindow) {
-        // Make window completely frameless - no macOS chrome
-        // NOTE: We use a custom KeyableWindow class that can accept keyboard input without .titled
-        window.styleMask.remove(.titled)
-        window.styleMask.remove(.closable)
-        window.styleMask.remove(.miniaturizable)
-        // Keep resizable for fullscreen to work
-        window.styleMask.insert(.resizable)
-        window.styleMask.insert(.borderless)
-        window.styleMask.insert(.fullSizeContentView)
-        
-        // Allow fullscreen mode
-        window.collectionBehavior = [.fullScreenPrimary, .fullScreenAllowsTiling]
-        
-        // Make title bar completely transparent and hide all buttons
+        // Keep a titled window with transparent chrome so SwiftUI content can reach the top edge.
+        // Stripping .titled and using .borderless leaves a dead titlebar band (the grey bar).
+        window.styleMask.insert([.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView])
+        window.styleMask.remove(.borderless)
+
+        window.collectionBehavior = []
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        
-        // Remove title bar spacing
+        window.titlebarSeparatorStyle = .none
         window.toolbar = nil
-        
-        // FORCE hide the traffic light buttons
-        window.standardWindowButton(.closeButton)?.superview?.isHidden = true
+
+        window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
-        
-        // Window appearance
-        window.backgroundColor = NSColor.black
+
+        let titleBarColor = NSColor(
+            red: 60.0 / 255.0,
+            green: 68.0 / 255.0,
+            blue: 92.0 / 255.0,
+            alpha: 1.0
+        )
+        window.backgroundColor = titleBarColor
         window.isOpaque = true
         window.hasShadow = true
+        // Only the custom title bar should move the window; interactive controls must not.
         window.isMovableByWindowBackground = false
-        
-        // Position window below menu bar (but don't set size here)
+
+        let windowID = ObjectIdentifier(window)
+        guard !Self.positionedWindows.contains(windowID) else { return }
+        Self.positionedWindows.insert(windowID)
+
         if let screen = window.screen {
             let screenFrame = screen.visibleFrame
             let windowFrame = window.frame
-            
+
             // Center horizontally, position at top of visible area (below menu bar)
             let x = screenFrame.midX - (windowFrame.width / 2)
             let y = screenFrame.maxY - windowFrame.height - 20 // 20pt below menu bar
-            
+
             window.setFrameOrigin(NSPoint(x: x, y: y))
         }
     }
-    
+
     private func loadPlaylistSize() {
-        // Load saved playlist height from UserDefaults (width is fixed at 450)
         let savedHeight = UserDefaults.standard.double(forKey: "playlistHeight")
-        
+
         if savedHeight > 0 {
-            playlistSize = CGSize(width: 450, height: savedHeight)
+            self.playlistSize = CGSize(width: self.uiScale.panelWidth, height: savedHeight)
+        } else {
+            self.playlistSize = CGSize(width: self.uiScale.panelWidth, height: self.playlistSize.height)
         }
     }
-    
+
     private func loadDisplayMode() {
         // Load saved display mode from UserDefaults
         let savedModeString = UserDefaults.standard.string(forKey: "songDisplayMode")
-        
+
         if let modeString = savedModeString {
             switch modeString {
             case "vestaboard":
-                songDisplayMode = .vestaboard
+                self.songDisplayMode = .vestaboard
             case "scrolling":
-                songDisplayMode = .scrolling
+                self.songDisplayMode = .scrolling
             case "scrollingUp":
-                songDisplayMode = .scrollingUp
+                self.songDisplayMode = .scrollingUp
             case "pixelated":
-                songDisplayMode = .pixelated
+                self.songDisplayMode = .pixelated
             default:
-                songDisplayMode = .scrolling
+                self.songDisplayMode = .scrolling
             }
         }
     }
-    
+
     private func saveDisplayMode(_ mode: DisplayMode) {
         // Save display mode to UserDefaults
-        let modeString: String
-        switch mode {
+        let modeString = switch mode {
         case .vestaboard:
-            modeString = "vestaboard"
+            "vestaboard"
         case .scrolling:
-            modeString = "scrolling"
+            "scrolling"
         case .scrollingUp:
-            modeString = "scrollingUp"
+            "scrollingUp"
         case .pixelated:
-            modeString = "pixelated"
+            "pixelated"
         }
         UserDefaults.standard.set(modeString, forKey: "songDisplayMode")
     }
-    
+
     private func loadTimeDisplayPreference() {
         // Load time display preference from UserDefaults
-        showRemainingTime = UserDefaults.standard.bool(forKey: "showRemainingTime")
+        self.showRemainingTime = UserDefaults.standard.bool(forKey: "showRemainingTime")
     }
-    
+
     private func saveTimeDisplayPreference(_ value: Bool) {
         // Save time display preference to UserDefaults
         UserDefaults.standard.set(value, forKey: "showRemainingTime")
     }
-    
-    private func setupWindowNotifications() {
-        // Listen for window miniaturize events
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.didMiniaturizeNotification,
-            object: nil,
-            queue: .main
-        ) { [self] _ in
-            // Hide visualization when window is minimized
-            if showVisualization {
-                showVisualization = false
+}
+
+struct PlaylistRestoreNoticeBanner: View {
+    let message: String
+    let isCritical: Bool
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: self.isCritical ? "exclamationmark.triangle.fill" : "exclamationmark.circle.fill")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(self.isCritical ? .orange : .yellow)
+                .padding(.top, 1)
+
+            Text(self.message)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(WinampColors.displayText)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 4)
+
+            Button(action: self.onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(WinampColors.displayText.opacity(0.8))
+                    .frame(width: 14, height: 14)
             }
+            .buttonStyle(.plain)
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(WinampColors.displayBg)
+        .overlay(
+            Rectangle()
+                .stroke(self.isCritical ? Color.orange.opacity(0.8) : Color.yellow.opacity(0.6), lineWidth: 1)
+        )
     }
 }

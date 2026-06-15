@@ -1,182 +1,96 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 
 @main
 struct WinampApp: App {
     @StateObject private var audioPlayer = AudioPlayer.shared
     @StateObject private var playlistManager = PlaylistManager.shared
+    @StateObject private var uiScale = WinampUIScale.shared
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
+    init() {
+        WinampTypography.registerBundledFonts()
+        self.appDelegate.bind(audioPlayer: AudioPlayer.shared, playlistManager: PlaylistManager.shared)
+    }
 
     var body: some Scene {
         WindowGroup {
-            // Use your real ContentView here - unchanged.
             ContentView()
-                .environmentObject(audioPlayer)
-                .environmentObject(playlistManager)
+                .environmentObject(self.audioPlayer)
+                .environmentObject(self.playlistManager)
+                .environmentObject(self.uiScale)
                 .preferredColorScheme(.dark)
-                .background(Color.clear) // ensure SwiftUI root isn't forcing an opaque fill
+                .background(Color.clear)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
-        .defaultSize(width: 275, height: 116)
+        .defaultSize(width: 450, height: 500)
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Playback") {
-                Button("Play/Pause") { audioPlayer.togglePlayPause() }
+                Button("Play/Pause") { self.audioPlayer.togglePlayPause() }
                     .keyboardShortcut("x", modifiers: [])
-                Button("Stop") { audioPlayer.stop() }
+                Button("Stop") { self.audioPlayer.stop() }
                     .keyboardShortcut("v", modifiers: [])
-                Button("Previous Track") { playlistManager.previous() }
+                Button("Previous Track") { self.playlistManager.previous() }
                     .keyboardShortcut("z", modifiers: [])
-                Button("Next Track") { playlistManager.next() }
+                Button("Next Track") { self.playlistManager.next() }
                     .keyboardShortcut("b", modifiers: [])
             }
             CommandMenu("File") {
-                Button("Add Files...") { playlistManager.showFilePicker() }
+                Button("Add Files...") { self.playlistManager.showFilePicker() }
                     .keyboardShortcut("l", modifiers: [.command])
-                Button("Add Folder...") { playlistManager.showFolderPicker() }
+                Button("Add Folder...") { self.playlistManager.showFolderPicker() }
                     .keyboardShortcut("l", modifiers: [.command, .shift])
             }
+            CommandMenu("View") {
+                ForEach(WinampUIScaleLevel.allCases) { level in
+                    Button(level.label) {
+                        self.uiScale.setLevel(level)
+                    }
+                    .disabled(self.uiScale.level == level)
+                }
+            }
         }
-    }
-}
-
-// Small, transparent icon view that sits in the titlebar and handles dragging
-final class TitlebarIconView: NSView {
-    private let imageView: NSImageView
-
-    init(image: NSImage? = nil, size: CGFloat = 14, paddingRight: CGFloat = 6) {
-        imageView = NSImageView()
-        super.init(frame: .zero)
-
-        translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.clear.cgColor
-
-        let img = image ?? (NSApp.applicationIconImage ?? NSImage(named: NSImage.applicationIconName))
-        imageView.image = img
-        imageView.translatesAutoresizingMaskIntoConstraints = false
-        imageView.imageScaling = .scaleProportionallyDown
-        imageView.wantsLayer = true
-        imageView.layer?.backgroundColor = NSColor.clear.cgColor
-
-        addSubview(imageView)
-
-        NSLayoutConstraint.activate([
-            imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            imageView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            imageView.widthAnchor.constraint(equalToConstant: size),
-            imageView.heightAnchor.constraint(equalToConstant: size),
-            trailingAnchor.constraint(equalTo: imageView.trailingAnchor, constant: paddingRight)
-        ])
-    }
-
-    required init?(coder: NSCoder) {
-        imageView = NSImageView()
-        super.init(coder: coder)
-    }
-
-    override var isFlipped: Bool { true }
-
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    override func mouseDown(with event: NSEvent) {
-        guard let win = window else { super.mouseDown(with: event); return }
-        if event.clickCount == 2 {
-            win.performMiniaturize(nil)
-            return
-        }
-        win.performDrag(with: event)
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { self }
-}
-
-final class TitlebarIconAccessory: NSTitlebarAccessoryViewController {
-    init(icon: NSImage? = nil, iconSize: CGFloat = 14, paddingRight: CGFloat = 6) {
-        super.init(nibName: nil, bundle: nil)
-        let v = TitlebarIconView(image: icon, size: iconSize, paddingRight: paddingRight)
-        self.view = v
-        self.layoutAttribute = .left // we'll position it relative to traffic lights after showing the window
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-    }
-}
-
-final class KeyableWindow: NSWindow {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
-
-    override init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing backingStoreType: NSWindow.BackingStoreType, defer flag: Bool) {
-        super.init(contentRect: contentRect, styleMask: styleMask, backing: backingStoreType, defer: flag)
-        // Transparent window
-        isOpaque = false
-        backgroundColor = .clear
-        titlebarAppearsTransparent = true
-        isMovableByWindowBackground = false // we'll use the tiny icon for drag
-        hasShadow = true
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        guard let originalWindow = NSApplication.shared.windows.first else { return }
+    private static var isRunningUnderTest: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
 
-        let style: NSWindow.StyleMask = [
-            .titled, .closable, .miniaturizable, .resizable, .fullSizeContentView
-        ]
+    private weak var audioPlayer: AudioPlayer?
+    private weak var playlistManager: PlaylistManager?
 
-        let customWindow = KeyableWindow(contentRect: originalWindow.frame, styleMask: style, backing: .buffered, defer: false)
+    func bind(audioPlayer: AudioPlayer, playlistManager: PlaylistManager) {
+        self.audioPlayer = audioPlayer
+        self.playlistManager = playlistManager
+    }
 
-        // preserve NSHostingController if present
-        if let contentVC = originalWindow.contentViewController {
-            customWindow.contentViewController = contentVC
-        } else if let contentView = originalWindow.contentView {
-            customWindow.contentView = contentView
-            contentView.frame = customWindow.contentView?.bounds ?? .zero
-            contentView.autoresizingMask = [.width, .height]
+    func applicationDidFinishLaunching(_: Notification) {
+        // Window chrome is applied in ContentView.setupWindow().
+        guard !Self.isRunningUnderTest else { return }
+    }
+
+    func applicationDidResignActive(_: Notification) {
+        guard !Self.isRunningUnderTest else { return }
+        MainActor.assumeIsolated {
+            DevelopmentSessionPersistence.saveCurrentSession(
+                audioPlayer: self.audioPlayer ?? .shared,
+                playlistManager: self.playlistManager ?? .shared
+            )
         }
+    }
 
-        // make sure the window content is transparent and composited
-        customWindow.titlebarAppearsTransparent = true
-        customWindow.isOpaque = false
-        customWindow.backgroundColor = .clear
-        customWindow.contentView?.wantsLayer = true
-        // Clear any background layer color on the hosting view
-        customWindow.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
-
-        customWindow.contentMinSize = NSSize(width: 275, height: 100)
-        customWindow.contentMaxSize = NSSize(width: 20000, height: 20000)
-
-        customWindow.title = originalWindow.title
-        customWindow.level = originalWindow.level
-        customWindow.collectionBehavior = originalWindow.collectionBehavior
-
-        // Add small icon accessory (left-aligned by default)
-        let accessory = TitlebarIconAccessory(icon: nil, iconSize: 14, paddingRight: 6)
-        customWindow.addTitlebarAccessoryViewController(accessory)
-
-        // Show the custom window and close original
-        customWindow.makeKeyAndOrderFront(nil)
-        originalWindow.close()
-
-        // After the window is visible, attempt to position the accessory to the right of the traffic lights.
-        DispatchQueue.main.async { [weak customWindow] in
-            guard let win = customWindow else { return }
-
-            guard let closeBtnSuperview = win.standardWindowButton(.closeButton)?.superview else {
-                return
-            }
-
-            // Position accessory relative to the traffic-lights container
-            accessory.view.translatesAutoresizingMaskIntoConstraints = false
-            let gap: CGFloat = 6
-            NSLayoutConstraint.activate([
-                accessory.view.centerYAnchor.constraint(equalTo: closeBtnSuperview.centerYAnchor),
-                accessory.view.leadingAnchor.constraint(equalTo: closeBtnSuperview.trailingAnchor, constant: gap)
-            ])
+    func applicationWillTerminate(_: Notification) {
+        guard !Self.isRunningUnderTest else { return }
+        MainActor.assumeIsolated {
+            DevelopmentSessionPersistence.saveCurrentSession(
+                audioPlayer: self.audioPlayer ?? .shared,
+                playlistManager: self.playlistManager ?? .shared
+            )
         }
     }
 }
