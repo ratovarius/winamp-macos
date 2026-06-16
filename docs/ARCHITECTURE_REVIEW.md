@@ -41,10 +41,15 @@ and *infrastructure*.
 > (`source → effects → mainMixer`), with the EQ extracted as the first unit
 > ([`EQAudioEffect`](../Sources/Audio/EQAudioEffect.swift)). Adding a DSP module is now
 > `graph.insert(_:at:)` / `graph.append(_:)` — no hand-wiring. The EQ DSP *policy*
-> (flat/disabled passthrough, dB→linear preamp) moved into `EQAudioEffect` and is unit
-> tested in isolation. **Still open:** the `AudioRenderingEngine` seam and decomposing
-> the rest of the `AudioPlayer` god object (transport / volume / remote-commands /
-> now-playing). The original analysis below stands for that remaining work.
+> (flat/disabled passthrough, dB→linear preamp, AUTO preamp compensation) moved into
+> `EQAudioEffect`, and the lock-screen mapping moved into
+> [`NowPlayingInfo`](../Sources/NowPlayingInfo.swift) — both unit tested in isolation.
+> **Still open:** decomposing the remaining `AudioPlayer` god object (transport / volume /
+> remote-commands). The `AudioRenderingEngine` mock-engine seam was **deliberately
+> deferred**: the `testing_*` hooks it would remove currently assert *real* engine
+> behavior (auto-advance, transport actions, node reuse), so replacing them with a mock
+> would lower test fidelity for little gain. The original analysis below stands for the
+> remaining decomposition work.
 
 **The biggest architectural gap relative to the stated goal** ("possibility to add audio
 modules to the pipeline").
@@ -219,8 +224,10 @@ signposts cost ~nothing when no trace is recording and surface directly in Instr
    first unit (`EQAudioEffect`), EQ policy unit-tested. ⬜ Still extract an
    **`AudioRenderingEngine` protocol** (mockable engine seam) to remove the `testing_*`
    leakage from `AudioPlayer` (T1).
-4. ⬜ **Decompose `AudioPlayer`** into Transport / Graph / Volume+ReplayGain /
-   RemoteCommands / NowPlaying collaborators.
+4. 🟡 **Decompose `AudioPlayer`** into Transport / Graph / Volume+ReplayGain /
+   RemoteCommands / NowPlaying collaborators. ✅ `NowPlayingInfo` (lock-screen mapping)
+   and the EQ AUTO-preamp math extracted + unit-tested; ⬜ transport / remote-commands
+   still inline.
 
 ### P2 — visualization extensibility (goal 2)  ⬜
 
@@ -246,3 +253,4 @@ signposts cost ~nothing when no trace is recording and surface directly in Instr
 |---|---|
 | 2026-06-16 | Initial whole-project architecture review. P0 implemented: CI test gating + `os_signpost`/GPU-timing instrumentation; `print` probes and `DiagnosticLog` retired. |
 | 2026-06-16 | P1 (foundation): introduced `AudioGraph` + `AudioEffectUnit`; extracted the EQ as `EQAudioEffect` (policy unit-tested); `AudioPlayer` now builds its pipeline from an ordered effect chain instead of hardcoded wiring. |
+| 2026-06-16 | P1 (decomposition): extracted `NowPlayingInfo` (lock-screen mapping) and the EQ AUTO-preamp math into testable units; deferred the `AudioRenderingEngine` mock seam (would lower real-engine test fidelity). |

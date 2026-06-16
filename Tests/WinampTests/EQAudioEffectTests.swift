@@ -131,4 +131,30 @@ final class EQAudioEffectTests: XCTestCase {
         XCTAssertTrue(effect.inputNode === effect.preamp)
         XCTAssertTrue(effect.outputNode === effect.eq)
     }
+
+    // MARK: - AUTO preamp compensation
+
+    func testAutoPreampZeroWhenNoBoost() {
+        XCTAssertEqual(EQAudioEffect.autoPreampCompensationDB(forBandGainsDB: Array(repeating: 0, count: 10)), 0, accuracy: 0.0001)
+    }
+
+    func testAutoPreampIgnoresCuts() {
+        // Only positive boosts drive the compensation; negative band gains contribute nothing.
+        let cutsOnly = [Float](repeating: -6, count: 10)
+        XCTAssertEqual(EQAudioEffect.autoPreampCompensationDB(forBandGainsDB: cutsOnly), 0, accuracy: 0.0001)
+    }
+
+    func testAutoPreampScalesWithSummedBoost() {
+        // Two +6 dB bands → 12 dB summed boost → −12 × 0.15 = −1.8 dB.
+        var bands = [Float](repeating: 0, count: 10)
+        bands[0] = 6
+        bands[1] = 6
+        XCTAssertEqual(EQAudioEffect.autoPreampCompensationDB(forBandGainsDB: bands), -1.8, accuracy: 0.0001)
+    }
+
+    func testAutoPreampCapsAtMinusNineDB() {
+        // 10 × +12 dB = 120 dB summed boost → −18 dB uncapped, clamped to −9 dB.
+        let maxed = [Float](repeating: 12, count: 10)
+        XCTAssertEqual(EQAudioEffect.autoPreampCompensationDB(forBandGainsDB: maxed), -9, accuracy: 0.0001)
+    }
 }

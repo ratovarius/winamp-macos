@@ -427,14 +427,14 @@ class AudioPlayer: NSObject, ObservableObject {
             return
         }
 
-        var nowPlayingInfo = [String: Any]()
-        nowPlayingInfo[MPMediaItemPropertyTitle] = track.title
-        nowPlayingInfo[MPMediaItemPropertyArtist] = track.artist
-        nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = self.duration
-        nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = self.currentTime
-        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = self.isPlaying ? 1.0 : 0.0
-
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+        let info = NowPlayingInfo(
+            title: track.title,
+            artist: track.artist,
+            duration: self.duration,
+            elapsedTime: self.currentTime,
+            isPlaying: self.isPlaying
+        )
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info.dictionary
     }
 
     func play() {
@@ -726,8 +726,8 @@ class AudioPlayer: NSObject, ObservableObject {
     /// Winamp AUTO: reduce preamp when bands are boosted to limit clipping.
     private func applyAutoPreampCompensation() {
         guard self.eqAutoEnabled, self.eqEnabled else { return }
-        let totalBoostDB = self.eqBandValues.map { max(0, $0 * 12) }.reduce(0, +)
-        let compensationDB = -min(totalBoostDB * 0.15, 9)
+        let bandGainsDB = self.eqBandValues.map { $0 * 12 }
+        let compensationDB = EQAudioEffect.autoPreampCompensationDB(forBandGainsDB: bandGainsDB)
         self.eqPreampValue = compensationDB / 12
         self.applyPreampGainToEngine(decibels: compensationDB)
     }

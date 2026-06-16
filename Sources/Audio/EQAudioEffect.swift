@@ -93,4 +93,12 @@ final class EQAudioEffect: AudioEffectUnit, @unchecked Sendable {
     static func linearGain(fromDecibels decibels: Float) -> Float {
         min(max(pow(10, decibels / 20), 0.05), 4)
     }
+
+    /// Winamp AUTO preamp: the negative preamp (dB) that counteracts the summed positive band
+    /// boost to limit clipping. Only boosts (positive band gains) contribute; the cut is capped
+    /// at −9 dB so heavily-boosted curves don't go inaudibly quiet.
+    static func autoPreampCompensationDB(forBandGainsDB bandGainsDB: [Float]) -> Float {
+        let totalBoostDB = bandGainsDB.map { max(0, $0) }.reduce(0, +)
+        return -min(totalBoostDB * 0.15, 9)
+    }
 }
