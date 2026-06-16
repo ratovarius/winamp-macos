@@ -133,7 +133,7 @@ loads/seeks is genuinely professional-grade.
 | V2 | Fullscreen presets aliased via `preset % 4` — only 4 of 11 reachable, names mislabeled. | ✅ **Fixed (P2)** | now a total one-branch-per-preset dispatch in [`VisualizerShaders.metal`](../Sources/Shaders/VisualizerShaders.metal); 11 distinct effects |
 | V3 | `VizUniforms` duplicated in Swift + Metal with no layout check. | ✅ **Fixed (P2)** | Metal `static_assert` on size/alignment + [`VizUniformsLayoutTests`](../Tests/WinampTests/VizUniformsLayoutTests.swift) on stride/offsets |
 | V4 | Silent pipeline-compile failures (`try? … → nil`, no log). | ✅ **Fixed (P2)** | [`MetalVisualizationEngine.makePipeline`](../Sources/Visualization/MetalVisualizationEngine.swift) logs missing functions + compile errors via `os.Logger` |
-| V5 | Minor per-frame allocations on the render path (waveform `readResampled`, uniforms struct). | 🟢 Low | `WaveformRingBuffer`, `MetalPipelineProvider.updateFloatBuffer` |
+| V5 | Per-frame `[Float]` allocations on the render path (spectrum smoother + analyzer peak tracker). | ✅ **Fixed (V5)** | smoother/peak-tracker now return reused state storage (copy-on-write value semantics), eliminating 1–3 array allocs/frame; guarded by value-semantics tests |
 
 **V2 design.** Each `VisualizationPreset` case maps 1:1 to a named shader branch dispatched
 by `rawValue` with **no wraparound**; `VisualizationPreset.shaderBranchCount` +
@@ -142,6 +142,12 @@ shader branch fails a test. Adding a visualization is now: add an enum case + a 
 branch. **V1** (multi-pass orchestration behind the plugin protocol) was deferred: it
 reworks correct, working render code for extensibility not yet needed — the same
 risk/value judgement applied to transport extraction in P1.
+
+**V5 scope.** The fix targets the two stateful, per-renderer components (`VisualizationFeatureSmoother`,
+`SpectrumPeakTracker`), which allocated fresh output arrays every frame despite already owning
+equivalent state — they now return that state via copy-on-write. The waveform `readResampled` path
+was intentionally left: it flows through the shared `AudioFeatureBus` singleton, where pooling
+mutable scratch that escapes into `AudioFeatures` is an aliasing hazard for low payoff.
 
 ---
 
@@ -276,3 +282,4 @@ signposts cost ~nothing when no trace is recording and surface directly in Instr
 | 2026-06-16 | P1 (complete): extracted `RemoteCommandController` (media-key routing, unit-tested without the shared command center). Goal 1 met; transport left inline by design. |
 | 2026-06-16 | P2 (most): all 11 fullscreen presets render distinctly (removed shader `% 4` ceiling, V2); `VizUniforms` Swift/Metal layout assertion (V3); pipeline-compile failures logged (V4). V1 (multi-pass behind plugin protocol) deferred. |
 | 2026-06-16 | P3 (render smoke): added `MetalVisualizationSmokeTests` — compiles all pipelines and renders every plugin + all 11 presets to an offscreen GPU target, skipped when no Metal device. Locks down the shaders shipped in P2. |
+| 2026-06-16 | V5 (render allocations): `VisualizationFeatureSmoother` and `SpectrumPeakTracker` return reused state storage (copy-on-write) instead of allocating output arrays each frame; value-semantics guard tests added. |

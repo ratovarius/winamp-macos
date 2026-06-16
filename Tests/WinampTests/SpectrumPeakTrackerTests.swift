@@ -33,4 +33,25 @@ final class SpectrumPeakTrackerTests: XCTestCase {
         XCTAssertEqual(cleared.bars[0], 0)
         XCTAssertEqual(cleared.peaks[0], 0)
     }
+
+    /// The tracker returns reused internal storage for both bars and peaks; previously returned
+    /// arrays must stay stable across later `update` calls (copy-on-write value semantics), and the
+    /// two returned arrays must be independent. Guards the per-frame allocation optimization.
+    func testPreviouslyReturnedArraysAreStableAndIndependent() {
+        var tracker = SpectrumPeakTracker()
+        let impulse = Array(repeating: Float(1), count: AudioFeatures.spectrumBandCount)
+
+        let first = tracker.update(targets: impulse, isPlaying: true, deltaTime: 1.0 / 60.0)
+        let firstBar = first.bars[0]
+        let firstPeak = first.peaks[0]
+        XCTAssertNotEqual(first.bars, first.peaks, "bars and peaks must be independent arrays")
+
+        let silence = Array(repeating: Float(0), count: AudioFeatures.spectrumBandCount)
+        for _ in 0 ..< 10 {
+            _ = tracker.update(targets: silence, isPlaying: true, deltaTime: 1.0 / 60.0)
+        }
+
+        XCTAssertEqual(first.bars[0], firstBar, accuracy: 0, "previously returned bars mutated")
+        XCTAssertEqual(first.peaks[0], firstPeak, accuracy: 0, "previously returned peaks mutated")
+    }
 }
