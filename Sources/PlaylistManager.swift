@@ -221,50 +221,9 @@ class PlaylistManager: ObservableObject {
         guard !self.tracks.isEmpty else { return }
 
         if self.shuffleEnabled {
-            // Use shuffled order
-            if self.shuffledIndices.isEmpty {
-                self.generateShuffledIndices()
-                self.shuffleCurrentIndex = 0
-            }
-
-            self.shuffleCurrentIndex += 1
-
-            // If we've reached the end of the shuffled list
-            if self.shuffleCurrentIndex >= self.shuffledIndices.count {
-                if self.repeatEnabled {
-                    // Regenerate shuffle order and start over (skip current track at index 0)
-                    self.generateShuffledIndices()
-                    self.shuffleCurrentIndex = 1 // Start with next track, not the current one
-
-                    // If we only have one track, just play it again
-                    if self.shuffledIndices.count <= 1 {
-                        self.shuffleCurrentIndex = 0
-                    }
-                } else {
-                    // Stop playback at end of playlist
-                    self.audioPlayer.stop()
-                    return
-                }
-            }
-
-            let nextIndex = self.shuffledIndices[self.shuffleCurrentIndex]
-            self.playTrack(at: nextIndex)
+            self.advanceShuffle(forward: true)
         } else {
-            // Normal sequential order
-            let nextIndex = self.currentIndex + 1
-
-            if nextIndex >= self.tracks.count {
-                // Reached end of playlist
-                if self.repeatEnabled {
-                    // Loop back to beginning
-                    self.playTrack(at: 0)
-                } else {
-                    // Stop playback
-                    self.audioPlayer.stop()
-                }
-            } else {
-                self.playTrack(at: nextIndex)
-            }
+            self.advanceSequential(forward: true)
         }
     }
 
@@ -272,29 +231,65 @@ class PlaylistManager: ObservableObject {
         guard !self.tracks.isEmpty else { return }
 
         if self.shuffleEnabled {
-            // Use shuffled order
-            if self.shuffledIndices.isEmpty {
-                self.generateShuffledIndices()
-                self.shuffleCurrentIndex = 0
-            }
+            self.advanceShuffle(forward: false)
+        } else {
+            self.advanceSequential(forward: false)
+        }
+    }
 
+    private func advanceShuffle(forward: Bool) {
+        if self.shuffledIndices.isEmpty {
+            self.generateShuffledIndices()
+            self.shuffleCurrentIndex = 0
+        }
+
+        if forward {
+            self.shuffleCurrentIndex += 1
+
+            if self.shuffleCurrentIndex >= self.shuffledIndices.count {
+                if self.repeatEnabled {
+                    self.generateShuffledIndices()
+                    self.shuffleCurrentIndex = 1
+
+                    if self.shuffledIndices.count <= 1 {
+                        self.shuffleCurrentIndex = 0
+                    }
+                } else {
+                    self.audioPlayer.stop()
+                    return
+                }
+            }
+        } else {
             self.shuffleCurrentIndex -= 1
 
             if self.shuffleCurrentIndex < 0 {
                 if self.repeatEnabled {
-                    // Wrap to end of shuffled list
                     self.shuffleCurrentIndex = self.shuffledIndices.count - 1
                 } else {
-                    // Stay at current track (can't go before first)
                     self.shuffleCurrentIndex = 0
                     return
                 }
             }
+        }
 
-            let prevIndex = self.shuffledIndices[self.shuffleCurrentIndex]
-            self.playTrack(at: prevIndex)
+        let targetIndex = self.shuffledIndices[self.shuffleCurrentIndex]
+        self.playTrack(at: targetIndex)
+    }
+
+    private func advanceSequential(forward: Bool) {
+        if forward {
+            let nextIndex = self.currentIndex + 1
+
+            if nextIndex >= self.tracks.count {
+                if self.repeatEnabled {
+                    self.playTrack(at: 0)
+                } else {
+                    self.audioPlayer.stop()
+                }
+            } else {
+                self.playTrack(at: nextIndex)
+            }
         } else {
-            // Normal sequential order
             let prevIndex = self.currentIndex > 0 ? self.currentIndex - 1 : (self.repeatEnabled ? self.tracks.count - 1 : 0)
             self.playTrack(at: prevIndex)
         }
@@ -496,9 +491,9 @@ class PlaylistManager: ObservableObject {
     }
 
     func importDroppedURL(_ url: URL) {
-        let ext = url.pathExtension.lowercased()
+        let ext = url.pathExtension
 
-        if ext == "m3u" || ext == "m3u8" {
+        if M3UParser.isM3UExtension(ext) {
             self.fileService.bookmarkM3UResources(for: url)
             self.importTracksInBackground { [fileService] in
                 await fileService.loadM3UPlaylist(from: url)
@@ -535,35 +530,34 @@ class PlaylistManager: ObservableObject {
         panel.allowedContentTypes = [.mp3, .wav, .init(filenameExtension: "flac"), .init(filenameExtension: "m3u")].compactMap { $0 }
 
         panel.begin { [weak self] response in
-            guard let self else { return }
-            if response == .OK {
-                for url in panel.urls {
-                    let ext = url.pathExtension.lowercased()
-                    if ext == "m3u" || ext == "m3u8" {
-                        self.fileService.bookmarkM3UResources(for: url)
-                    } else {
-                        self.bookmarkStore.saveBookmark(for: url)
-                    }
-                }
+            guard let self, response == .OK else { return }
+            self.importPickedURLs(panel.urls)
+        }
+    }
 
-                let urls = panel.urls
-                let fileService = self.fileService
-                Task.detached(priority: .userInitiated) {
-                    var newTracks: [Track] = []
-                    for url in urls {
-                        let ext = url.pathExtension.lowercased()
-                        if ext == "m3u" || ext == "m3u8" {
-                            if let m3uTracks = await fileService.loadM3UPlaylist(from: url) {
-                                newTracks.append(contentsOf: m3uTracks)
-                            }
-                        } else {
-                            await newTracks.append(Track.load(from: url))
-                        }
+    private func importPickedURLs(_ urls: [URL]) {
+        for url in urls {
+            if M3UParser.isM3UExtension(url.pathExtension) {
+                self.fileService.bookmarkM3UResources(for: url)
+            } else {
+                self.bookmarkStore.saveBookmark(for: url)
+            }
+        }
+
+        let fileService = self.fileService
+        Task.detached(priority: .userInitiated) { [weak self] in
+            var newTracks: [Track] = []
+            for url in urls {
+                if M3UParser.isM3UExtension(url.pathExtension) {
+                    if let m3uTracks = await fileService.loadM3UPlaylist(from: url) {
+                        newTracks.append(contentsOf: m3uTracks)
                     }
-                    await MainActor.run { [weak self] in
-                        self?.addTracks(newTracks)
-                    }
+                } else {
+                    await newTracks.append(Track.load(from: url))
                 }
+            }
+            await MainActor.run {
+                self?.addTracks(newTracks)
             }
         }
     }

@@ -7,6 +7,11 @@ enum M3UParser {
         self.supportedExtensions.contains(ext.lowercased())
     }
 
+    static func isM3UExtension(_ ext: String) -> Bool {
+        let lower = ext.lowercased()
+        return lower == "m3u" || lower == "m3u8"
+    }
+
     /// Parses M3U content into resolved track URLs (does not verify files exist).
     static func parseTrackURLs(from content: String, playlistDirectory: URL) -> [URL] {
         var urls: [URL] = []
