@@ -14,8 +14,6 @@ struct MainPlayerView: View {
     @Binding var songDisplayMode: DisplayMode
     @Binding var showRemainingTime: Bool
 
-    @State private var seekDragging = false
-    @State private var seekDragPercent: Double = 0
     @AppStorage("visualizationMode") private var visualizationMode: Int = 0
     @State private var showingSongInfo = false
     @State private var autoToggleMode = false
@@ -49,27 +47,7 @@ struct MainPlayerView: View {
                             }
                             .buttonStyle(.plain)
 
-                            // Classic Winamp blinks the time readout while paused.
-                            TimelineView(.periodic(from: .now, by: 0.5)) { context in
-                                let paused = !self.audioPlayer.isPlaying && self.audioPlayer.duration > 0
-                                let blinkOff = paused
-                                    && Int(context.date.timeIntervalSinceReferenceDate * 2) % 2 == 1
-                                SevenSegmentDisplay(
-                                    text: self.formatTime(
-                                        self.showRemainingTime
-                                            ? -(self.audioPlayer.duration - self.audioPlayer.currentTime)
-                                            : self.audioPlayer.currentTime,
-                                        showNegative: self.showRemainingTime
-                                    ),
-                                    digitWidth: 13 * uiScale,
-                                    digitHeight: 20 * uiScale,
-                                    spacing: 3 * uiScale
-                                )
-                                .opacity(blinkOff ? 0.15 : 1.0)
-                            }
-                            .onTapGesture {
-                                self.showRemainingTime.toggle()
-                            }
+                            PlayerTimeReadout(showRemainingTime: self.$showRemainingTime)
                         }
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .padding(.horizontal, 6)
@@ -311,76 +289,7 @@ struct MainPlayerView: View {
                 .padding(.top, 6)
                 .padding(.bottom, 4)
 
-                // Classic position bar: thin recessed trough + small notched thumb.
-                GeometryReader { geo in
-                    let thumbW: CGFloat = 29 * uiScale
-                    let trackH: CGFloat = 10 * uiScale
-                    let percent = CGFloat(self.seekDragging
-                        ? self.seekDragPercent
-                        : (self.audioPlayer.currentTime / max(self.audioPlayer.duration, 1)))
-                    let thumbX = max(0, min(geo.size.width - thumbW, (geo.size.width - thumbW) * percent))
-
-                    ZStack(alignment: .leading) {
-                        // Recessed trough
-                        Rectangle()
-                            .fill(Color.black)
-                            .frame(height: trackH)
-                            .overlay(
-                                Rectangle().strokeBorder(
-                                    LinearGradient(
-                                        colors: [Color.black.opacity(0.9), WinampColors.borderLight.opacity(0.4)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    ),
-                                    lineWidth: 1
-                                )
-                            )
-
-                        // Notched silver thumb
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 1 * uiScale)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            Color(red: 0.90, green: 0.92, blue: 0.96),
-                                            Color(red: 0.62, green: 0.65, blue: 0.72),
-                                        ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 1 * uiScale)
-                                        .strokeBorder(Color.black.opacity(0.55), lineWidth: 1)
-                                )
-                            // Vertical center notch
-                            Rectangle()
-                                .fill(Color.black.opacity(0.4))
-                                .frame(width: 2 * uiScale, height: trackH * 0.55)
-                        }
-                        .frame(width: thumbW, height: trackH)
-                        .offset(x: thumbX)
-                    }
-                    .frame(height: trackH)
-                    .frame(maxHeight: .infinity, alignment: .center)
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { drag in
-                                self.seekDragging = true
-                                self.seekDragPercent = max(0, min(1, Double(drag.location.x / geo.size.width)))
-                            }
-                            .onEnded { drag in
-                                let percent = max(0, min(1, Double(drag.location.x / geo.size.width)))
-                                let newTime = self.audioPlayer.duration * percent
-                                self.audioPlayer.seek(to: max(0, min(newTime, self.audioPlayer.duration - 0.1)))
-                                self.seekDragging = false
-                            }
-                    )
-                }
-                .frame(height: 12 * uiScale)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
+                PlayerSeekBar()
 
                 // Control buttons row
                 HStack(spacing: 4) {
@@ -453,14 +362,6 @@ struct MainPlayerView: View {
         return "\(bitrate) kbps • \(sampleRate) kHz"
     }
 
-    private func formatTime(_ time: TimeInterval, showNegative: Bool = false) -> String {
-        let absTime = abs(time)
-        let minutes = Int(absTime) / 60
-        let seconds = Int(absTime) % 60
-        let prefix = showNegative ? "-" : ""
-        return String(format: "%@%d:%02d", prefix, minutes, seconds)
-    }
-
     private func startAutoToggle() {
         // Toggle every 5 seconds
         self.autoToggleTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
@@ -473,5 +374,122 @@ struct MainPlayerView: View {
     private func stopAutoToggle() {
         self.autoToggleTimer?.invalidate()
         self.autoToggleTimer = nil
+    }
+}
+
+/// The ticking time display. Observes `PlaybackClock` (not the whole `AudioPlayer`) so the
+/// ~10 Hz position updates re-render only this small readout, leaving `MainPlayerView.body`
+/// — and the main thread the Metal visualizer draws on — idle between real state changes.
+private struct PlayerTimeReadout: View {
+    @EnvironmentObject var audioPlayer: AudioPlayer
+    @EnvironmentObject var clock: PlaybackClock
+    @Environment(\.winampUIScale) private var uiScale
+    @Binding var showRemainingTime: Bool
+
+    var body: some View {
+        // Classic Winamp blinks the time readout while paused.
+        TimelineView(.periodic(from: .now, by: 0.5)) { context in
+            let paused = !self.audioPlayer.isPlaying && self.audioPlayer.duration > 0
+            let blinkOff = paused
+                && Int(context.date.timeIntervalSinceReferenceDate * 2) % 2 == 1
+            SevenSegmentDisplay(
+                text: WinampTimeFormatting.format(
+                    self.showRemainingTime
+                        ? -(self.audioPlayer.duration - self.clock.currentTime)
+                        : self.clock.currentTime,
+                    showNegative: self.showRemainingTime
+                ),
+                digitWidth: 13 * uiScale,
+                digitHeight: 20 * uiScale,
+                spacing: 3 * uiScale
+            )
+            .opacity(blinkOff ? 0.15 : 1.0)
+        }
+        .onTapGesture {
+            self.showRemainingTime.toggle()
+        }
+    }
+}
+
+/// The position/seek bar. Observes `PlaybackClock` for the ~10 Hz progress so the thumb
+/// tracks playback without re-rendering the rest of `MainPlayerView`.
+private struct PlayerSeekBar: View {
+    @EnvironmentObject var audioPlayer: AudioPlayer
+    @EnvironmentObject var clock: PlaybackClock
+    @Environment(\.winampUIScale) private var uiScale
+    @State private var seekDragging = false
+    @State private var seekDragPercent: Double = 0
+
+    var body: some View {
+        // Classic position bar: thin recessed trough + small notched thumb.
+        GeometryReader { geo in
+            let thumbW: CGFloat = 29 * uiScale
+            let trackH: CGFloat = 10 * uiScale
+            let percent = CGFloat(self.seekDragging
+                ? self.seekDragPercent
+                : (self.clock.currentTime / max(self.audioPlayer.duration, 1)))
+            let thumbX = max(0, min(geo.size.width - thumbW, (geo.size.width - thumbW) * percent))
+
+            ZStack(alignment: .leading) {
+                // Recessed trough
+                Rectangle()
+                    .fill(Color.black)
+                    .frame(height: trackH)
+                    .overlay(
+                        Rectangle().strokeBorder(
+                            LinearGradient(
+                                colors: [Color.black.opacity(0.9), WinampColors.borderLight.opacity(0.4)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                    )
+
+                // Notched silver thumb
+                ZStack {
+                    RoundedRectangle(cornerRadius: 1 * uiScale)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.90, green: 0.92, blue: 0.96),
+                                    Color(red: 0.62, green: 0.65, blue: 0.72),
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 1 * uiScale)
+                                .strokeBorder(Color.black.opacity(0.55), lineWidth: 1)
+                        )
+                    // Vertical center notch
+                    Rectangle()
+                        .fill(Color.black.opacity(0.4))
+                        .frame(width: 2 * uiScale, height: trackH * 0.55)
+                }
+                .frame(width: thumbW, height: trackH)
+                .offset(x: thumbX)
+            }
+            .frame(height: trackH)
+            .frame(maxHeight: .infinity, alignment: .center)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        self.seekDragging = true
+                        self.seekDragPercent = max(0, min(1, Double(drag.location.x / geo.size.width)))
+                    }
+                    .onEnded { drag in
+                        let percent = max(0, min(1, Double(drag.location.x / geo.size.width)))
+                        let newTime = self.audioPlayer.duration * percent
+                        self.audioPlayer.seek(to: max(0, min(newTime, self.audioPlayer.duration - 0.1)))
+                        self.seekDragging = false
+                    }
+            )
+        }
+        .frame(height: 12 * uiScale)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
     }
 }

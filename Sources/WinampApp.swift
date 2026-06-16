@@ -10,21 +10,24 @@ struct WinampApp: App {
 
     init() {
         WinampTypography.registerBundledFonts()
-        self.appDelegate.bind(audioPlayer: AudioPlayer.shared, playlistManager: PlaylistManager.shared)
     }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(self.audioPlayer)
+                .environmentObject(self.audioPlayer.playbackClock)
                 .environmentObject(self.playlistManager)
                 .environmentObject(self.uiScale)
                 .preferredColorScheme(.dark)
                 .background(Color.clear)
+                .onAppear {
+                    self.appDelegate.bind(audioPlayer: self.audioPlayer, playlistManager: self.playlistManager)
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
-        .defaultSize(width: 450, height: 500)
+        .defaultSize(width: 450, height: 180)
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Playback") {
@@ -136,10 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidResignActive(_: Notification) {
         guard !Self.isRunningUnderTest else { return }
         MainActor.assumeIsolated {
-            DevelopmentSessionPersistence.saveCurrentSession(
-                audioPlayer: self.audioPlayer ?? .shared,
-                playlistManager: self.playlistManager ?? .shared
-            )
+            self.saveSessionIfNeeded()
         }
     }
 
@@ -154,10 +154,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.clickEventMonitor = nil
         }
         MainActor.assumeIsolated {
-            DevelopmentSessionPersistence.saveCurrentSession(
-                audioPlayer: self.audioPlayer ?? .shared,
-                playlistManager: self.playlistManager ?? .shared
-            )
+            self.saveSessionIfNeeded()
         }
+    }
+
+    @MainActor
+    private func saveSessionIfNeeded() {
+        DevelopmentSessionPersistence.saveCurrentSession(
+            audioPlayer: self.audioPlayer ?? .shared,
+            playlistManager: self.playlistManager ?? .shared
+        )
     }
 }

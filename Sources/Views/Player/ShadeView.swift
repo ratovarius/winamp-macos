@@ -8,111 +8,55 @@ struct ShadeView: View {
     @Binding var songDisplayMode: DisplayMode
     @Binding var showRemainingTime: Bool
 
+    private var displayTrack: Track? {
+        self.playlistManager.currentTrack ?? self.audioPlayer.currentTrack
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // Title bar (draggable)
             ClassicTitleBar(isShadeMode: self.$isShadeMode)
 
-            // Compact shade content with 3D effects
             HStack(spacing: 6) {
-                // Mini spectrum with 3D inset
-                ClassicVisualizerView()
-                    .frame(width: 50, height: 20)
-                    .background(Color.black)
-                    .overlay(
-                        // Inner shadow effect for depth
-                        RoundedRectangle(cornerRadius: 3)
-                            .strokeBorder(
-                                LinearGradient(
-                                    colors: [Color.black.opacity(0.8), Color.white.opacity(0.1)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                lineWidth: 1.5
-                            )
-                    )
-                    .cornerRadius(3)
-                    .shadow(color: Color.black.opacity(0.3), radius: 1, x: 0, y: 1)
+                ShadeInsetPanel {
+                    ClassicVisualizerView()
+                        .frame(width: 50, height: 20)
+                }
 
-                // Playback control buttons
                 HStack(spacing: 2) {
-                    // Previous button
                     ShadeButton(icon: "⏮") {
                         self.playlistManager.previous()
                     }
 
-                    // Play/Pause button
                     ShadeButton(icon: self.audioPlayer.isPlaying ? "⏸" : "▶") {
                         self.audioPlayer.togglePlayPause()
                     }
 
-                    // Next button
                     ShadeButton(icon: "⏭") {
                         self.playlistManager.next()
                     }
                 }
 
-                // Time display with 3D inset
-                Text(self.formatTime(
-                    self.showRemainingTime ? -(self.audioPlayer.duration - self.audioPlayer.currentTime) : self.audioPlayer.currentTime,
-                    showNegative: self.showRemainingTime
-                ))
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundColor(WinampColors.displayText)
-                .shadow(color: WinampColors.displayText.opacity(0.5), radius: 2, x: 0, y: 0)
-                .frame(width: 50, height: 20)
-                .background(
-                    ZStack {
-                        Color.black
-                        // Inner shadow effect
-                        RoundedRectangle(cornerRadius: 3)
-                            .strokeBorder(
-                                LinearGradient(
-                                    colors: [Color.black.opacity(0.8), Color.white.opacity(0.1)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                lineWidth: 1.5
-                            )
-                    }
-                )
-                .cornerRadius(3)
-                .shadow(color: Color.black.opacity(0.3), radius: 1, x: 0, y: 1)
+                ShadeInsetPanel {
+                    ShadeTimeReadout(showRemainingTime: self.$showRemainingTime)
+                }
                 .onTapGesture {
                     self.showRemainingTime.toggle()
                 }
 
-                // Song title with animated visualization
-                AnimatedSongDisplay(
-                    artist: self.playlistManager.currentTrack?.artist ?? "DJ Mike Llama",
-                    title: self.playlistManager.currentTrack?.title ?? "Llama Whippin' Intro",
-                    trackId: self.playlistManager.currentTrack?.id,
-                    displayMode: self.$songDisplayMode
-                )
-                .frame(maxWidth: .infinity)
-                .frame(height: 20)
-                .background(
-                    ZStack {
-                        Color(red: 0.1, green: 0.12, blue: 0.18)
-                        // Inner shadow effect
-                        RoundedRectangle(cornerRadius: 3)
-                            .strokeBorder(
-                                LinearGradient(
-                                    colors: [Color.black.opacity(0.7), Color.white.opacity(0.1)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                lineWidth: 1.5
-                            )
-                    }
-                )
-                .cornerRadius(3)
-                .shadow(color: Color.black.opacity(0.3), radius: 1, x: 0, y: 1)
+                ShadeSongInsetPanel {
+                    AnimatedSongDisplay(
+                        artist: self.displayTrack?.artist ?? "DJ Mike Llama",
+                        title: self.displayTrack?.title ?? "Llama Whippin' Intro",
+                        trackId: self.displayTrack?.id,
+                        displayMode: self.$songDisplayMode
+                    )
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 20)
+                }
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 4)
             .background(
-                // Main background with subtle gradient
                 LinearGradient(
                     colors: [
                         Color(red: 0.18, green: 0.20, blue: 0.26),
@@ -127,13 +71,24 @@ struct ShadeView: View {
             }
         }
     }
+}
 
-    func formatTime(_ time: TimeInterval, showNegative: Bool = false) -> String {
-        let absTime = abs(time)
-        let minutes = Int(absTime) / 60
-        let seconds = Int(absTime) % 60
-        let prefix = showNegative ? "-" : ""
-        return String(format: "%@%d:%02d", prefix, minutes, seconds)
+/// The shade-mode time display. Observes `PlaybackClock` so the ~10 Hz updates re-render
+/// only this readout, not the whole compact player.
+private struct ShadeTimeReadout: View {
+    @EnvironmentObject var audioPlayer: AudioPlayer
+    @EnvironmentObject var clock: PlaybackClock
+    @Binding var showRemainingTime: Bool
+
+    var body: some View {
+        Text(WinampTimeFormatting.format(
+            self.showRemainingTime ? -(self.audioPlayer.duration - self.clock.currentTime) : self.clock.currentTime,
+            showNegative: self.showRemainingTime
+        ))
+        .font(.system(size: 10, weight: .bold, design: .monospaced))
+        .foregroundColor(WinampColors.displayText)
+        .shadow(color: WinampColors.displayText.opacity(0.5), radius: 2, x: 0, y: 0)
+        .frame(width: 50, height: 20)
     }
 }
 
@@ -143,6 +98,16 @@ struct ShadeButton: View {
     let action: () -> Void
     @State private var isPressed = false
     @State private var isHovered = false
+
+    private var gradientColors: [Color] {
+        if self.isPressed {
+            return [Color(red: 0.15, green: 0.17, blue: 0.22), Color(red: 0.18, green: 0.20, blue: 0.26)]
+        }
+        if self.isHovered {
+            return [Color(red: 0.30, green: 0.34, blue: 0.42), Color(red: 0.24, green: 0.27, blue: 0.34)]
+        }
+        return [Color(red: 0.26, green: 0.30, blue: 0.38), Color(red: 0.20, green: 0.23, blue: 0.30)]
+    }
 
     var body: some View {
         Button(action: {
@@ -160,23 +125,16 @@ struct ShadeButton: View {
                 .frame(width: 22, height: 18)
                 .background(
                     ZStack {
-                        // Base button color with gradient
                         RoundedRectangle(cornerRadius: 3)
                             .fill(
                                 LinearGradient(
-                                    colors: self.isPressed ?
-                                        [Color(red: 0.15, green: 0.17, blue: 0.22), Color(red: 0.18, green: 0.20, blue: 0.26)] :
-                                        self.isHovered ?
-                                        [Color(red: 0.30, green: 0.34, blue: 0.42), Color(red: 0.24, green: 0.27, blue: 0.34)] :
-                                        [Color(red: 0.26, green: 0.30, blue: 0.38), Color(red: 0.20, green: 0.23, blue: 0.30)],
+                                    colors: self.gradientColors,
                                     startPoint: .top,
                                     endPoint: .bottom
                                 )
                             )
 
-                        // 3D bevel effect
                         if !self.isPressed {
-                            // Top-left highlight (raised)
                             RoundedRectangle(cornerRadius: 3)
                                 .strokeBorder(
                                     LinearGradient(
@@ -187,7 +145,6 @@ struct ShadeButton: View {
                                     lineWidth: 1.5
                                 )
 
-                            // Bottom-right shadow
                             RoundedRectangle(cornerRadius: 3)
                                 .strokeBorder(
                                     LinearGradient(
@@ -198,7 +155,6 @@ struct ShadeButton: View {
                                     lineWidth: 1.5
                                 )
                         } else {
-                            // Inverted bevel when pressed (inset)
                             RoundedRectangle(cornerRadius: 3)
                                 .strokeBorder(
                                     LinearGradient(
@@ -212,7 +168,6 @@ struct ShadeButton: View {
                     }
                 )
                 .overlay(
-                    // Outer border
                     RoundedRectangle(cornerRadius: 3)
                         .strokeBorder(Color.black.opacity(0.7), lineWidth: 1)
                 )
@@ -225,5 +180,3 @@ struct ShadeButton: View {
         }
     }
 }
-
-// Removed duplicate WindowControlButton - using ModernWindowButton instead

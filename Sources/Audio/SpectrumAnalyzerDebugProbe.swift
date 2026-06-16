@@ -17,7 +17,7 @@ enum SpectrumAnalyzerDebugProbe: Sendable {
     nonisolated(unsafe) private static var lastLogTime: CFAbsoluteTime = 0
     private static let minimumInterval: CFAbsoluteTime = 1.0
 
-    static func log(stage: String, bands: [Float], context: String = "") {
+    static func log(stage: String, bands: [Float], context: @autoclosure () -> String = "") {
         guard self.isEnabled, !bands.isEmpty else { return }
 
         let now = CFAbsoluteTimeGetCurrent()
@@ -31,7 +31,10 @@ enum SpectrumAnalyzerDebugProbe: Sendable {
         let minValue = bands.min() ?? 0
         let maxValue = bands.max() ?? 0
         let mean = bands.reduce(0, +) / Float(bands.count)
-        let suffix = context.isEmpty ? "" : " \(context)"
+        // `context` is an autoclosure: it (and any string formatting at the call site) is
+        // only evaluated here, after the enabled + throttle guards pass.
+        let resolvedContext = context()
+        let suffix = resolvedContext.isEmpty ? "" : " \(resolvedContext)"
 
         spectrumDebugLogger.info(
             """

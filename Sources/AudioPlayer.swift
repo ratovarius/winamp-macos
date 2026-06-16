@@ -4,16 +4,33 @@ import Combine
 import Foundation
 import MediaPlayer
 import os
+import QuartzCore
 import UniformTypeIdentifiers
 
 private let audioLogger = Logger(subsystem: "com.winamp.macos", category: "AudioEngine")
+
+/// Holds the high-frequency playback position on its own observable so the ~10 Hz timer
+/// updates only invalidate the small time/seek readouts that observe it — not every view
+/// that observes `AudioPlayer`. Keeps the main thread (shared with the Metal visualizer's
+/// `draw(in:)`) free of full player-chrome re-renders while a track plays.
+@MainActor
+final class PlaybackClock: ObservableObject {
+    @Published var currentTime: TimeInterval = 0
+}
 
 @MainActor
 class AudioPlayer: NSObject, ObservableObject {
     static let shared = AudioPlayer()
 
     @Published var isPlaying = false
-    @Published var currentTime: TimeInterval = 0
+    /// Playback position lives on a dedicated observable so its ~10 Hz updates re-render
+    /// only the time readouts that observe `playbackClock`, not every view that observes
+    /// the player. `currentTime` forwards to it so existing call sites are unchanged.
+    let playbackClock = PlaybackClock()
+    var currentTime: TimeInterval {
+        get { self.playbackClock.currentTime }
+        set { self.playbackClock.currentTime = newValue }
+    }
     @Published var duration: TimeInterval = 0
     @Published var volume: Float = 0.75
     @Published var balance: Float = 0
@@ -160,15 +177,24 @@ class AudioPlayer: NSObject, ObservableObject {
         guard !self.spectrumTapInstalled, let engine = self.audioEngine else { return }
 
         let analyzer = FFTSpectrumAnalyzer(bandCount: AudioFeatures.spectrumBandCount)
+        analyzer.onSpectrumFrames = { [weak self] frames, batchDuration in
+            guard let self else { return }
+            AudioFeatureBus.shared.publishSpectrumFrames(
+                frames,
+                arrivalTime: CACurrentMediaTime(),
+                batchDuration: batchDuration,
+                isPlaying: self.isPlayingInternal
+            )
+        }
         analyzer.onAnalysisUpdate = { [weak self] bands, _, _ in
             guard let self else { return }
-            let preampDB = 20 * log10(max(self.spectrumDebugPreampLinear, 0.000_01))
+            // Build the diagnostic context lazily: the probe throttles to ~1 Hz, so the
+            // string and its log10 only run when it actually emits, not on every callback.
             SpectrumAnalyzerDebugProbe.log(
                 stage: "publish",
                 bands: bands,
-                context: String(format: "preamp=%.1fdB tap=mainMixer", preampDB)
+                context: String(format: "preamp=%.1fdB tap=mainMixer", 20 * log10(max(self.spectrumDebugPreampLinear, 0.000_01)))
             )
-            AudioFeatureBus.shared.publishSpectrum(bands, isPlaying: self.isPlayingInternal)
         }
         analyzer.installTap(on: engine.mainMixerNode)
         self.spectrumAnalyzer = analyzer
@@ -241,9 +267,6 @@ class AudioPlayer: NSObject, ObservableObject {
         for (index, gain) in settings.bandGainsDB.enumerated() where index < eq.bands.count {
             eq.bands[index].gain = gain
         }
-        print(String(format: "[AUDIO] applyEQ enabled=%@ flat=%@ → eq.bypass=%@ preamp.linear=%.3f (passthrough=%@)",
-                     settings.eqEnabled ? "yes" : "no", flat ? "yes" : "no",
-                     bypass ? "yes" : "no", linearGain, (bypass && flat) ? "BIT-PERFECT" : "no"))
     }
 
     /// True when every band and the preamp sit within a hair of 0 dB — i.e. the EQ would be a no-op.
@@ -672,10 +695,6 @@ class AudioPlayer: NSObject, ObservableObject {
         let tapered = Self.volumeTaper(self.volume)
         let normalization = self.volumeNormalizationEnabled ? self.normalizationLinearGain : 1.0
         let applied = max(0, min(4, tapered * normalization))
-        let taperDB = tapered > 0 ? 20 * log10(tapered) : -.infinity
-        let normDB = normalization > 0 ? 20 * log10(normalization) : -.infinity
-        print(String(format: "[AUDIO] volume slider=%.3f → taper=%.3f (%.1f dB) × norm=%.3f (%.1f dB) = %.3f",
-                     self.volume, tapered, taperDB, normalization, normDB, applied))
         self.audioQueue.async { [weak self] in
             self?.playerNode?.volume = applied
         }
@@ -709,19 +728,12 @@ class AudioPlayer: NSObject, ObservableObject {
     private func recomputeNormalizationGain() {
         let gain = self.currentReplayGain.normalizationGain(preferAlbum: self.volumeNormalizationPreferAlbum)
         self.normalizationLinearGain = gain
-        let db = gain > 0 ? 20 * log10(gain) : -.infinity
-        print(String(format: "[AUDIO] ReplayGain track=%@ album=%@ → normalization=%.3f (%.1f dB) preferAlbum=%@",
-                     self.currentReplayGain.trackGainDB.map { String(format: "%.2f dB", $0) } ?? "—",
-                     self.currentReplayGain.albumGainDB.map { String(format: "%.2f dB", $0) } ?? "—",
-                     gain, db, self.volumeNormalizationPreferAlbum ? "yes" : "no"))
     }
 
     func setEQBand(_ band: Int, gain: Float) {
         guard band >= 0, band < self.eqBandValues.count else { return }
         self.eqBandValues[band] = gain / 12
         self.persistEQSettings()
-        let freq = band < WinampEQBands.centerFrequenciesHz.count ? WinampEQBands.centerFrequenciesHz[band] : 0
-        print(String(format: "[AUDIO] EQ band %d (%.0f Hz) gain=%.2f dB", band, freq, gain))
         if self.eqAutoEnabled {
             // AUTO recomputes preamp; bands are never effectively flat here so apply directly.
             self.audioQueue.async { [weak self] in
@@ -789,7 +801,6 @@ class AudioPlayer: NSObject, ObservableObject {
     private func applyPreampGainToEngine(decibels: Float) {
         let linearGain = Self.linearGain(fromDecibels: decibels)
         self.spectrumDebugPreampLinear = linearGain
-        print(String(format: "[AUDIO] preamp=%.2f dB → mixer.outputVolume=%.3f (auto=%@)", decibels, linearGain, self.eqAutoEnabled ? "on" : "off"))
         self.audioQueue.async { [weak self] in
             self?.preampNode?.outputVolume = linearGain
         }
