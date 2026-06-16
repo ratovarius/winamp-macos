@@ -14,6 +14,13 @@ struct VizUniforms {
     uint scopeSampleCount;
 };
 
+// Layout must stay byte-compatible with the Swift `VizUniforms` (MetalVisualizationPlugin.swift),
+// which is memcpy'd into the uniform buffer. `VizUniformsLayoutTests` asserts the same numbers on
+// the Swift side, so a field reorder/insert breaks both the shader build and a unit test rather
+// than silently corrupting every visualization.
+static_assert(sizeof(VizUniforms) == 48, "VizUniforms size must match Swift MemoryLayout<VizUniforms>.stride");
+static_assert(alignof(VizUniforms) == 8, "VizUniforms alignment must match the Swift struct");
+
 struct SpectrumVertexOut {
     float4 position [[position]];
     float2 uv;
@@ -305,6 +312,131 @@ static float3 waveformTunnel(float2 uv, float time, float energy) {
     return col;
 }
 
+// MARK: - Procedural noise helpers (shared by the cloud/particle presets)
+
+static float hash21(float2 p) {
+    p = fract(p * float2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+static float2 hash22(float2 p) {
+    float n = sin(dot(p, float2(41.0, 289.0)));
+    return fract(float2(262144.0, 32768.0) * n);
+}
+
+static float valueNoise(float2 p) {
+    float2 i = floor(p);
+    float2 f = fract(p);
+    float a = hash21(i);
+    float b = hash21(i + float2(1.0, 0.0));
+    float c = hash21(i + float2(0.0, 1.0));
+    float d = hash21(i + float2(1.0, 1.0));
+    float2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+static float fbm(float2 p) {
+    float v = 0.0;
+    float amp = 0.5;
+    for (int i = 0; i < 5; i++) {
+        v += amp * valueNoise(p);
+        p = p * 2.0 + 13.0;
+        amp *= 0.5;
+    }
+    return v;
+}
+
+// MARK: - Additional fullscreen presets (one per VisualizationPreset case)
+
+static float3 spiralGalaxy(float2 uv, float time, float energy, float bass) {
+    float2 p = uv - 0.5;
+    float r = length(p);
+    float a = atan2(p.y, p.x);
+    float spiral = sin(2.0 * a + r * 18.0 - time * 1.5 - bass * 4.0);
+    float arms = pow(max(spiral, 0.0), 2.0) * (1.0 - r);
+    float core = smoothstep(0.45, 0.0, r);
+    float3 col = float3(0.6, 0.4, 1.0) * arms;
+    col += float3(1.0, 0.8, 0.5) * core * (0.6 + energy);
+    return col;
+}
+
+static float3 oscillatorGrid(float2 uv, float time, float mid, float treble) {
+    float2 cell = fract(uv * 8.0) - 0.5;
+    float2 id = floor(uv * 8.0);
+    float phase = time * 2.0 + (id.x + id.y) * 0.5;
+    float pulse = sin(phase + mid * 6.0) * 0.5 + 0.5;
+    float dot = smoothstep(0.42 * pulse, 0.34 * pulse, length(cell));
+    float3 col = mix(float3(0.0, 0.08, 0.18), float3(0.2, 0.9, 0.8), dot);
+    col += treble * 0.3 * dot;
+    return col;
+}
+
+static float3 particleStorm(float2 uv, float time, float energy) {
+    float3 col = float3(0.0);
+    for (int i = 0; i < 20; i++) {
+        float fi = float(i);
+        float2 seed = hash22(float2(fi, fi * 1.7 + 2.0));
+        float2 pos = fract(seed + float2(sin(time * 0.3 + fi), time * (0.1 + seed.x * 0.3)));
+        float d = length(uv - pos);
+        float spark = 0.004 / (d + 0.002);
+        col += spark * (0.5 + energy) * float3(0.7 + seed.x * 0.3, 0.5, 1.0 - seed.y * 0.5);
+    }
+    return col;
+}
+
+static float3 lfoMorph(float2 uv, float time, float bass, float mid, float treble) {
+    float lfo = sin(time * 0.5) * 0.5 + 0.5;
+    float3 a = plasma(uv, time, bass, treble);
+    float3 b = frequencyRings(uv, time, bass, mid);
+    return mix(a, b, lfo);
+}
+
+static float3 nebulaGalaxy(float2 uv, float time, float energy) {
+    float2 p = uv * 3.0;
+    float clouds = fbm(p + float2(time * 0.1, time * 0.05));
+    float veil = fbm(p * 1.5 - float2(time * 0.08, 0.0));
+    float3 col = mix(float3(0.08, 0.0, 0.18), float3(0.9, 0.3, 0.6), clouds);
+    col += float3(0.2, 0.4, 0.9) * veil * 0.6;
+    col *= 0.5 + energy * 0.8;
+    return col;
+}
+
+static float3 starfieldFlight(float2 uv, float time, float energy) {
+    float2 p = uv - 0.5;
+    float3 col = float3(0.0);
+    for (int i = 0; i < 32; i++) {
+        float fi = float(i);
+        float2 dir = normalize(hash22(float2(fi, fi + 3.0)) - 0.5);
+        float speed = 0.2 + hash21(float2(fi, 7.0)) * 0.8;
+        float z = fract(time * speed + hash21(float2(fi, 1.0)));
+        float2 sp = dir * z * 0.7;
+        float d = length(p - sp);
+        col += (0.0018 / (d + 0.001)) * z * (0.6 + energy);
+    }
+    return col;
+}
+
+static float3 starWarsCrawl(float2 uv, float time, float energy) {
+    float2 p = float2(uv.x - 0.5, uv.y);
+    float horizon = 0.85;
+    float persp = horizon - p.y;
+    if (persp <= 0.001) {
+        return float3(0.0, 0.0, 0.04);
+    }
+    float2 q = float2(p.x / persp, time * 0.3 + 0.2 / persp);
+    float bands = step(0.5, fract(q.y * 6.0));
+    float text = bands * smoothstep(1.2, 0.2, abs(q.x));
+    float3 col = float3(1.0, 0.85, 0.2) * text * clamp(persp * 3.0, 0.0, 1.0);
+    col += float3(0.0, 0.0, 0.04);
+    col *= 0.7 + energy * 0.5;
+    return col;
+}
+
+// Dispatches one distinct effect per `VisualizationPreset` case. There is intentionally NO
+// modulo/wraparound: each raw value maps to its own named visual, and the final `else` covers
+// the last case. Adding a preset = add a `VisualizationPreset` case + a branch here (see
+// `VisualizationPresetTests.testPresetCountMatchesShaderBranchCount`).
 fragment float4 fullscreenFragment(float4 position [[position]],
                                    constant VizUniforms &uniforms [[buffer(0)]]) {
     float2 uv = position.xy / uniforms.resolution;
@@ -312,18 +444,35 @@ fragment float4 fullscreenFragment(float4 position [[position]],
 
     float time = uniforms.time;
     float energy = uniforms.energy;
-    uint preset = uniforms.preset % 4;
+    float bass = uniforms.bass;
+    float mid = uniforms.mid;
+    float treble = uniforms.treble;
+    uint preset = uniforms.preset;
 
     float3 color;
-    if (preset == 0) {
-        float2 k = kaleidoscope(uv, time, energy);
-        color = plasma(k, time, uniforms.bass, uniforms.treble);
-    } else if (preset == 1) {
-        color = plasma(uv, time, uniforms.bass, uniforms.treble);
-    } else if (preset == 2) {
-        color = frequencyRings(uv, time, uniforms.bass, uniforms.mid);
-    } else {
+    if (preset == 0u) {            // spiralGalaxy
+        color = spiralGalaxy(uv, time, energy, bass);
+    } else if (preset == 1u) {     // oscillatorGrid
+        color = oscillatorGrid(uv, time, mid, treble);
+    } else if (preset == 2u) {     // plasmaField
+        color = plasma(uv, time, bass, treble);
+    } else if (preset == 3u) {     // particleStorm
+        color = particleStorm(uv, time, energy);
+    } else if (preset == 4u) {     // frequencyRings
+        color = frequencyRings(uv, time, bass, mid);
+    } else if (preset == 5u) {     // waveformTunnel
         color = waveformTunnel(uv, time, energy);
+    } else if (preset == 6u) {     // kaleidoscope
+        float2 k = kaleidoscope(uv, time, energy);
+        color = plasma(k, time, bass, treble);
+    } else if (preset == 7u) {     // lfoMorph
+        color = lfoMorph(uv, time, bass, mid, treble);
+    } else if (preset == 8u) {     // nebulaGalaxy
+        color = nebulaGalaxy(uv, time, energy);
+    } else if (preset == 9u) {     // starfieldFlight
+        color = starfieldFlight(uv, time, energy);
+    } else {                       // starWarsCrawl (10)
+        color = starWarsCrawl(uv, time, energy);
     }
 
     color *= 0.85 + energy * 0.35;

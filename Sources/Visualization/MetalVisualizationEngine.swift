@@ -1,6 +1,8 @@
 import Metal
 import os
 
+private let visualizationLogger = Logger(subsystem: "com.winamp.macos", category: "Visualization")
+
 /// Shared Metal device, command queue, and compiled pipeline states for all visualizers.
 final class MetalVisualizationEngine: @unchecked Sendable {
     static let shared: MetalVisualizationEngine = {
@@ -106,6 +108,9 @@ final class MetalVisualizationEngine: @unchecked Sendable {
         guard let vertexFunction = library.makeFunction(name: vertex),
               let fragmentFunction = library.makeFunction(name: fragment)
         else {
+            visualizationLogger.error(
+                "Missing Metal function(s) for pipeline (vertex: \(vertex, privacy: .public), fragment: \(fragment, privacy: .public)); visualizer will skip this pass."
+            )
             return nil
         }
 
@@ -113,6 +118,15 @@ final class MetalVisualizationEngine: @unchecked Sendable {
         descriptor.vertexFunction = vertexFunction
         descriptor.fragmentFunction = fragmentFunction
         descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-        return try? device.makeRenderPipelineState(descriptor: descriptor)
+        do {
+            return try self.device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            // A nil pipeline makes the visualizer silently skip frames; surface the reason so a
+            // bad shader is diagnosable instead of just showing a black panel.
+            visualizationLogger.error(
+                "Failed to compile pipeline (vertex: \(vertex, privacy: .public), fragment: \(fragment, privacy: .public)): \(error.localizedDescription, privacy: .public)"
+            )
+            return nil
+        }
     }
 }

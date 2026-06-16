@@ -27,7 +27,7 @@ and *infrastructure*.
 | Goal | Grade | One-line summary |
 |---|---|---|
 | 1. Modular audio pipeline | **C+ → B** | **`AudioGraph` + `AudioEffectUnit` chain landed (P1 ✅)**; EQ, NowPlaying, AUTO-preamp, and remote commands extracted from the god object. Further transport decomposition is optional. |
-| 2. Excellent + performant visualizations | **B+** | Performance engineering is excellent; the preset/extensibility system is the weak point. |
+| 2. Excellent + performant visualizations | **B+ → A−** | **P2 ✅**: all 11 presets now render distinctly (the `% 4` ceiling is gone), `VizUniforms` layout is assertion-guarded, and pipeline-compile failures are logged. Multi-pass plugin refactor (V1) deferred. |
 | 3. Fully automated testability | **C+ → B−** | ~177 good unit tests exist; **CI now runs them (P0 ✅)**. Views/render/window still untested. |
 | 4. Profiling (CPU/mem/GPU) | **C → B−** | **`os_signpost` + GPU timing added (P0 ✅)**. MetricKit + memory instrumentation still open. |
 
@@ -78,7 +78,7 @@ analysis tap is hardwired onto `mainMixerNode` inside the player.
 
 Compounding this, [`AudioPlayer.swift`](../Sources/AudioPlayer.swift) is a **996-line god
 object** owning transport, engine lifecycle, EQ, ReplayGain/volume,
-`MPRemoteCommandCenter`, now-playing info, lyrics loading, the spectrum tap, the 10 Hz UI
+`MPRemoteCommandCenter`, now-playing info, the spectrum tap, the 10 Hz UI
 timer, *and* ~10 `testing_` hooks. The "pipeline" is inseparable from transport and UI.
 
 **Best-in-class target:** an `AudioGraph` that owns the `AVAudioEngine` and exposes an
@@ -129,14 +129,19 @@ loads/seeks is genuinely professional-grade.
 
 | # | Issue | Severity | Where |
 |---|---|---|---|
-| V1 | Multi-pass persistence/composite orchestration lives in the **renderer**, not behind the plugin protocol — a new visualization needing different passes requires engine surgery. | 🟡 Medium | [`MetalVisualizationView.swift`](../Sources/Visualization/MetalVisualizationView.swift) `drawSpectrumWithPeakPersistence` |
-| V2 | Fullscreen "Milkdrop" presets are hardcoded in the shader as `preset % 4`, yet `VisualizationPreset` declares **11** cases — **7 are unreachable**. No procedural/scriptable preset system. | 🟡 Medium | [`VisualizerShaders.metal`](../Sources/Shaders/VisualizerShaders.metal) ~L348, [`VisualizationPreset.swift`](../Sources/Views/Visualizer/VisualizationPreset.swift) |
-| V3 | `VizUniforms` is **duplicated** in Swift + Metal with no compile-time layout check — a future field reorder silently corrupts rendering. | 🟡 Medium | [`MetalVisualizationPlugin.swift#L4-L15`](../Sources/Visualization/MetalVisualizationPlugin.swift#L4-L15) |
-| V4 | **Silent pipeline-compile failures**: `makePipeline` returns `try? … → nil` with no log; a bad shader just skips frames. | 🟡 Medium | [`MetalVisualizationEngine.swift#L108-L117`](../Sources/Visualization/MetalVisualizationEngine.swift#L108-L117) |
+| V1 | Multi-pass persistence/composite orchestration lives in the **renderer**, not behind the plugin protocol — a new visualization needing different passes requires engine surgery. | 🟡 Medium · **deferred** | [`MetalVisualizationView.swift`](../Sources/Visualization/MetalVisualizationView.swift) `drawSpectrumWithPeakPersistence` |
+| V2 | Fullscreen presets aliased via `preset % 4` — only 4 of 11 reachable, names mislabeled. | ✅ **Fixed (P2)** | now a total one-branch-per-preset dispatch in [`VisualizerShaders.metal`](../Sources/Shaders/VisualizerShaders.metal); 11 distinct effects |
+| V3 | `VizUniforms` duplicated in Swift + Metal with no layout check. | ✅ **Fixed (P2)** | Metal `static_assert` on size/alignment + [`VizUniformsLayoutTests`](../Tests/WinampTests/VizUniformsLayoutTests.swift) on stride/offsets |
+| V4 | Silent pipeline-compile failures (`try? … → nil`, no log). | ✅ **Fixed (P2)** | [`MetalVisualizationEngine.makePipeline`](../Sources/Visualization/MetalVisualizationEngine.swift) logs missing functions + compile errors via `os.Logger` |
 | V5 | Minor per-frame allocations on the render path (waveform `readResampled`, uniforms struct). | 🟢 Low | `WaveformRingBuffer`, `MetalPipelineProvider.updateFloatBuffer` |
 
-All are incremental fixes except V2, which deserves a real design (data-driven presets
-or a shader-graph / uniform-table approach).
+**V2 design.** Each `VisualizationPreset` case maps 1:1 to a named shader branch dispatched
+by `rawValue` with **no wraparound**; `VisualizationPreset.shaderBranchCount` +
+`VisualizationPresetTests` guard the Swift↔shader contract so adding a preset that lacks a
+shader branch fails a test. Adding a visualization is now: add an enum case + a shader
+branch. **V1** (multi-pass orchestration behind the plugin protocol) was deferred: it
+reworks correct, working render code for extensibility not yet needed — the same
+risk/value judgement applied to transport extraction in P1.
 
 ---
 
@@ -145,7 +150,7 @@ or a shader-graph / uniform-table approach).
 **The unit-test foundation is good; the *automation* was the broken part.**
 
 - ~177 tests across 38 files thoroughly cover the *pure* layers: FFT, auto-leveler, peak
-  tracker, playout clock, ring buffer, parsers (M3U/LRC/metadata/EQF), playlist
+  tracker, playout clock, ring buffer, parsers (M3U/metadata/EQF), playlist
   manager/state/bookmarks, volume model, EQ bands, window snapping/docking. A genuinely
   strong base reflecting deliberate "extract pure function → test it" discipline.
 - Good DI seams exist:
@@ -234,7 +239,13 @@ signposts cost ~nothing when no trace is recording and surface directly in Instr
    threading-sensitive (serial `audioQueue` + generation IDs) and already covered by
    real-engine integration tests, so extracting it now is high-risk / low-value.
 
-### P2 — visualization extensibility (goal 2)  ⬜
+### P2 — visualization extensibility (goal 2)  🟡 In progress
+
+5. 🟡 **Preset system + robustness.** ✅ Removed the `% 4` ceiling — all 11 presets render
+   distinctly via a total dispatch (V2); ✅ `VizUniforms` layout assertion on both sides
+   (V3); ✅ pipeline-compile failures logged (V4). ⬜ Multi-pass orchestration behind the
+   plugin protocol (V1) deferred — reworks working render code for not-yet-needed
+   extensibility.
 
 5. **Move multi-pass orchestration behind the plugin protocol** (V1), add a
    **data-driven preset system** (fix the `% 4` ceiling, V2), add a **compile-time
@@ -260,3 +271,4 @@ signposts cost ~nothing when no trace is recording and surface directly in Instr
 | 2026-06-16 | P1 (foundation): introduced `AudioGraph` + `AudioEffectUnit`; extracted the EQ as `EQAudioEffect` (policy unit-tested); `AudioPlayer` now builds its pipeline from an ordered effect chain instead of hardcoded wiring. |
 | 2026-06-16 | P1 (decomposition): extracted `NowPlayingInfo` (lock-screen mapping) and the EQ AUTO-preamp math into testable units; deferred the `AudioRenderingEngine` mock seam (would lower real-engine test fidelity). |
 | 2026-06-16 | P1 (complete): extracted `RemoteCommandController` (media-key routing, unit-tested without the shared command center). Goal 1 met; transport left inline by design. |
+| 2026-06-16 | P2 (most): all 11 fullscreen presets render distinctly (removed shader `% 4` ceiling, V2); `VizUniforms` Swift/Metal layout assertion (V3); pipeline-compile failures logged (V4). V1 (multi-pass behind plugin protocol) deferred. |
