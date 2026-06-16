@@ -291,6 +291,17 @@ struct FrequencyResponseGraph: View {
     let preampValue: Float
     var lineWidth: CGFloat = 2.0
 
+    /// Stops for the vertical green→red gradient that colors the response curve by
+    /// height. Sampled from `WinampColors.levelColor` at its 0.45 / 0.72 break points
+    /// (plus a few midpoints) so a single gradient stroke reproduces the former
+    /// per-segment coloring. `location` runs top→bottom, so level = 1 − location.
+    private static let heightColorStops: [Gradient.Stop] = {
+        let levels: [CGFloat] = [1.0, 0.86, 0.72, 0.585, 0.45, 0.225, 0.0]
+        return levels.map { level in
+            Gradient.Stop(color: WinampColors.levelColor(normalized: level), location: 1 - level)
+        }
+    }()
+
     var body: some View {
         Canvas { context, size in
             // Classic Winamp graph: faint dark-green dotted grid, with a brighter
@@ -329,25 +340,18 @@ struct FrequencyResponseGraph: View {
                 style: StrokeStyle(lineWidth: lineWidth + 3.0, lineCap: .round, lineJoin: .round)
             )
 
-            // Color the curve by height: high peaks → red, low valleys → green
-            // (sampled into short segments along the smooth spline).
-            let samples = 80
-            for i in 0 ..< samples {
-                let t0 = CGFloat(i) / CGFloat(samples)
-                let t1 = CGFloat(i + 1) / CGFloat(samples)
-                let p0 = CatmullRomSpline.point(at: t0, through: points)
-                let p1 = CatmullRomSpline.point(at: t1, through: points)
-                // 1 at the top of the graph (peak) → 0 at the bottom (valley).
-                let level = 1 - (p0.y / size.height)
-                var seg = Path()
-                seg.move(to: p0)
-                seg.addLine(to: p1)
-                context.stroke(
-                    seg,
-                    with: .color(WinampColors.levelColor(normalized: level)),
-                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
-                )
-            }
+            // Color the curve by height (green valleys → red peaks) in a single
+            // stroke: a vertical gradient evaluates the `levelColor` mapping per
+            // pixel-row, replacing the ~80 little segment paths stroked every redraw.
+            context.stroke(
+                curvePath,
+                with: .linearGradient(
+                    Gradient(stops: Self.heightColorStops),
+                    startPoint: CGPoint(x: 0, y: 0),
+                    endPoint: CGPoint(x: 0, y: size.height)
+                ),
+                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
+            )
         }
         .background(Color.black.opacity(0.9))
         .overlay(
@@ -391,33 +395,5 @@ enum CatmullRomSpline {
         }
 
         return path
-    }
-
-    /// Evaluate the spline at normalized parameter t (0…1) across all segments.
-    static func point(at t: CGFloat, through points: [CGPoint]) -> CGPoint {
-        guard points.count >= 2 else { return points.first ?? .zero }
-        let segments = points.count - 1
-        let clamped = max(0, min(1, t))
-        let scaled = clamped * CGFloat(segments)
-        let index = min(segments - 1, Int(scaled))
-        let localT = scaled - CGFloat(index)
-
-        let p0 = points[max(0, index - 1)]
-        let p1 = points[index]
-        let p2 = points[index + 1]
-        let p3 = points[min(points.count - 1, index + 2)]
-
-        let c1 = CGPoint(x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6)
-        let c2 = CGPoint(x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6)
-
-        let u = 1 - localT
-        let w0 = u * u * u
-        let w1 = 3 * u * u * localT
-        let w2 = 3 * u * localT * localT
-        let w3 = localT * localT * localT
-        return CGPoint(
-            x: w0 * p1.x + w1 * c1.x + w2 * c2.x + w3 * p2.x,
-            y: w0 * p1.y + w1 * c1.y + w2 * c2.y + w3 * p2.y
-        )
     }
 }
