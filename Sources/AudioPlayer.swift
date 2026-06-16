@@ -36,8 +36,6 @@ class AudioPlayer: NSObject, ObservableObject {
     @Published var volume: Float = 0.75
     @Published var balance: Float = 0
     @Published var currentTrack: Track?
-    @Published var currentLyrics: [LyricLine] = []
-    @Published var currentLyricText: String?
     @Published var currentBitrate: Int = 128
     @Published var currentSampleRate: Double = 44100
     @Published var currentChannels: Int = 2
@@ -332,17 +330,6 @@ class AudioPlayer: NSObject, ObservableObject {
         self.isPlaying = false
         self.currentTime = 0
         self.currentTrack = track
-        self.currentLyrics = []
-        self.currentLyricText = nil
-
-        if let url = track.url {
-            LyricsParser.loadLyrics(for: url, artist: track.artist, title: track.title, duration: track.duration) { [weak self] lyrics in
-                Task { @MainActor [weak self] in
-                    guard self?.currentTrack?.id == track.id else { return }
-                    self?.currentLyrics = lyrics ?? []
-                }
-            }
-        }
     }
 
     private func clearFailedLoadState() {
@@ -350,8 +337,6 @@ class AudioPlayer: NSObject, ObservableObject {
         self.duration = 0
         self.currentTime = 0
         self.isPlaying = false
-        self.currentLyrics = []
-        self.currentLyricText = nil
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
@@ -802,7 +787,6 @@ class AudioPlayer: NSObject, ObservableObject {
             self.runOnMainActor(weak: self) { player in
                 guard player.isPlaying else { return }
                 player.currentTime = time
-                player.updateCurrentLyric()
             }
         }
     }
@@ -816,13 +800,6 @@ class AudioPlayer: NSObject, ObservableObject {
             return nil
         }
         return Double(playerTime.sampleTime) / file.fileFormat.sampleRate
-    }
-
-    private func updateCurrentLyric() {
-        let newLyric = LyricsParser.getCurrentLyric(lyrics: self.currentLyrics, currentTime: self.currentTime)
-        if newLyric != self.currentLyricText {
-            self.currentLyricText = newLyric
-        }
     }
 
     private func decaySpectrumDisplay() {

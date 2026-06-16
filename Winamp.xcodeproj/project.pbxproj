@@ -12,7 +12,6 @@
 		A10000049 /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A20000049 /* JetBrainsMono-Regular.ttf */; };
 		A10000050 /* JetBrainsMono-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A20000050 /* JetBrainsMono-Bold.ttf */; };
 		B10000007 /* sample.m3u in Resources */ = {isa = PBXBuildFile; fileRef = B20000007 /* sample.m3u */; };
-		B10000008 /* sample.lrc in Resources */ = {isa = PBXBuildFile; fileRef = B20000008 /* sample.lrc */; };
 		B10000009 /* short.wav in Resources */ = {isa = PBXBuildFile; fileRef = B20000009 /* short.wav */; };
 /* End PBXBuildFile section */
 
@@ -25,7 +24,6 @@
 		A20000050 /* JetBrainsMono-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = JetBrainsMono-Bold.ttf; sourceTree = "<group>"; };
 		B10000000 /* WinampTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WinampTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000007 /* sample.m3u */ = {isa = PBXFileReference; lastKnownFileType = text; path = sample.m3u; sourceTree = "<group>"; };
-		B20000008 /* sample.lrc */ = {isa = PBXFileReference; lastKnownFileType = text; path = sample.lrc; sourceTree = "<group>"; };
 		B20000009 /* short.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = short.wav; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -120,7 +118,6 @@
 			isa = PBXGroup;
 			children = (
 				B20000007 /* sample.m3u */,
-				B20000008 /* sample.lrc */,
 				B20000009 /* short.wav */,
 			);
 			path = Fixtures;
@@ -215,7 +212,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				B10000007 /* sample.m3u in Resources */,
-				B10000008 /* sample.lrc in Resources */,
 				B10000009 /* short.wav in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

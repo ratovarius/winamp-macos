@@ -24,8 +24,7 @@ A native macOS application that recreates the classic Winamp experience for play
 - 📊 Spectrum analyzer visualization
 - 🎚️ 10-band equalizer
 - 🌀 Milkdrop-style visualizer (click the icon in the main app) with fullscreen mode
-- 📜 Lyrics overlay in the Milkdrop view
-- 🔍 File browser with drag-and-drop support
+-  File browser with drag-and-drop support
 
 > **Note:** The spectrum analyzer currently renders synthesized data rather than a real FFT of the audio stream — wiring up a real `AVAudioEngine` tap → FFT pipeline is a planned improvement. See [AGENTS.md](AGENTS.md) for the full roadmap.
 

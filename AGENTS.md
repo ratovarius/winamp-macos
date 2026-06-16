@@ -36,7 +36,7 @@ Target users are music collectors and audiophiles who remember Winamp fondly and
 
 - **Top-level `Sources/`** — the app shell and primary models/views: `WinampApp` (`@main` + menus),
   `ContentView` (root view + AppKit window setup), `AudioPlayer` (AVAudioEngine + EQ + media keys),
-  `PlaylistManager`, `Track`, and the parsers (`M3UParser`, `TrackMetadataParser`, `LyricsParser`).
+  `PlaylistManager`, `Track`, and the parsers (`M3UParser`, `TrackMetadataParser`).
 - **`Audio/`** — DSP & analysis (FFT, EQ bands, feature bus, ring buffer, auto-leveler). Pure
   signal/data code; **keep SwiftUI/AppKit out of it** so it stays testable and reusable.
 - **`Playlist/`** — persistence & file I/O (state store, M3U file service, security-scoped
@@ -111,12 +111,12 @@ Use the project script — it generates the required fixtures first, then runs t
 ```
 This wraps:
 ```bash
-./scripts/generate-fixtures.sh   # builds Tests/Fixtures (sample.m3u, sample.lrc, short.wav)
+./scripts/generate-fixtures.sh   # builds Tests/Fixtures (sample.m3u, short.wav)
 xcodebuild test -project Winamp.xcodeproj -scheme Winamp \
     -destination 'platform=macOS,arch=arm64' ONLY_ACTIVE_ARCH=YES
 ```
 `scripts/run-tests.sh` picks `arm64` or `x86_64` via `uname -m` so Intel Macs work without editing the script.
-Running `xcodebuild test` directly without generating fixtures first will fail the fixture-dependent suites (M3U, lyrics, WAV) — those are missing-file errors, not real regressions.
+Running `xcodebuild test` directly without generating fixtures first will fail the fixture-dependent suites (M3U, WAV) — those are missing-file errors, not real regressions.
 
 ### Formatting & linting
 The repo ships `.swiftformat` and `.swiftlint.yml` configs with wrapper scripts:

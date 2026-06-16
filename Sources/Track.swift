@@ -8,7 +8,6 @@ struct Track: Identifiable, Equatable, Sendable {
     let artist: String
     let duration: TimeInterval
     let fileSize: Int64
-    var lyrics: [LyricLine]?
 
     static func == (lhs: Track, rhs: Track) -> Bool {
         lhs.id == rhs.id
@@ -20,7 +19,6 @@ struct Track: Identifiable, Equatable, Sendable {
         self.artist = artist
         self.duration = duration
         self.fileSize = fileSize
-        self.lyrics = nil
     }
 
     static func load(from url: URL) async -> Track {
