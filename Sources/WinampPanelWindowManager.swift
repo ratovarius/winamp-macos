@@ -24,8 +24,6 @@ final class WinampPanelWindowManager {
     private var playlistManager: PlaylistManager?
     private var uiScale: WinampUIScale?
 
-    private var dockedBelow: [WinampPanelID: ObjectIdentifier] = [:]
-    private var isFloating: [WinampPanelID: Bool] = [:]
     private var moveObservers: [NSObjectProtocol] = []
     private var dragEventMonitor: Any?
     private var activeDrag: ActiveDrag?
@@ -35,10 +33,21 @@ final class WinampPanelWindowManager {
     /// a descriptor here rather than editing per-kind branches throughout the manager.
     private lazy var registry: [WinampPanelDescriptor] = self.makeRegistry()
 
+    /// The persisted, ordered stack — the single source of truth for dock order and floating state.
+    private lazy var stackModel = WinampPanelStackModel(defaultOrder: self.panelIDs)
+
     private var panelIDs: [WinampPanelID] { self.registry.map(\.id) }
 
     private func descriptor(for id: WinampPanelID) -> WinampPanelDescriptor? {
         self.registry.first { $0.id == id }
+    }
+
+    private func isFloating(_ id: WinampPanelID) -> Bool {
+        self.stackModel.floating.contains(id)
+    }
+
+    private func visibleIDs() -> Set<WinampPanelID> {
+        Set(self.panelIDs.filter { self.windows[$0]?.isVisible == true })
     }
 
     private func makeRegistry() -> [WinampPanelDescriptor] {
@@ -118,7 +127,6 @@ final class WinampPanelWindowManager {
             self.setPanelVisible(descriptor.isVisible(), descriptor: descriptor)
         }
 
-        self.reanchorDockedPlaylist()
         self.stackDockedPanels()
     }
 
@@ -127,7 +135,7 @@ final class WinampPanelWindowManager {
         guard self.windows[.playlist]?.isVisible == true,
               let descriptor = self.descriptor(for: .playlist) else { return }
         self.applyContentSize(for: descriptor)
-        if !self.isFloating[.playlist, default: false] {
+        if !self.isFloating(.playlist) {
             self.repositionDockedPlaylist()
         }
     }
@@ -165,14 +173,14 @@ final class WinampPanelWindowManager {
     func stackDockedPanels() {
         guard let mainWindow else { return }
 
-        if !self.isFloating[.equalizer, default: false], self.windows[.equalizer] != nil {
-            self.positionPanel(.equalizer, below: mainWindow)
-        }
-
-        if !self.isFloating[.playlist, default: false], self.windows[.playlist] != nil {
-            if let anchor = self.dockAnchorWindow(for: .playlist) {
-                self.positionPanel(.playlist, below: anchor)
-            }
+        // Position the docked panels in model order: each sits flush below its predecessor, the
+        // first below the main window. Generic over the registry — no per-panel branches — so a
+        // reordered stack (e.g. playlist above EQ) or a new panel just works.
+        var anchor = mainWindow
+        for id in self.stackModel.dockedStack(visible: self.visibleIDs()) {
+            guard let window = self.windows[id] else { continue }
+            self.positionPanel(id, below: anchor)
+            anchor = window
         }
 
         self.syncChildWindowLinks()
@@ -187,7 +195,7 @@ final class WinampPanelWindowManager {
         for id in self.panelIDs {
             guard let panel = self.windows[id] else { continue }
 
-            let desiredParent: NSWindow? = panel.isVisible && !self.isFloating[id, default: false]
+            let desiredParent: NSWindow? = panel.isVisible && !self.isFloating(id)
                 ? self.dockAnchorWindow(for: id)
                 : nil
 
@@ -222,8 +230,11 @@ final class WinampPanelWindowManager {
             self.dragEventMonitor = nil
         }
         self.activeDrag = nil
+        // Reclassify the stack from where the windows landed (geometry → model), then snap every
+        // docked panel to its exact flush position. `stackDockedPanels` does the snapping, so no
+        // separate snap pass is needed.
         self.refreshDockState()
-        self.applySnapIfNeeded()
+        self.stackDockedPanels()
     }
 
     // MARK: - Private
@@ -297,8 +308,8 @@ final class WinampPanelWindowManager {
 
             self.windows[id] = window
             self.hostingControllers[id] = hosting
-            self.isFloating[id] = false
-            self.setDefaultDockParent(for: id)
+            // A freshly shown panel docks (its place in the order comes from the persisted model).
+            self.stackModel.markDocked(id)
         }
 
         self.applyContentSize(for: descriptor)
@@ -351,71 +362,13 @@ final class WinampPanelWindowManager {
         }
     }
 
-    private func setDefaultDockParent(for id: WinampPanelID) {
-        // Docking anchors are still resolved per panel here; generalizing this into the ordered
-        // stack model is M2. The EQ docks under the main window; the playlist under whichever
-        // window the docking rule selects.
-        if id == .playlist {
-            if let anchor = self.defaultPlaylistAnchor() {
-                self.dockedBelow[id] = ObjectIdentifier(anchor)
-            }
-        } else if let mainWindow {
-            self.dockedBelow[id] = ObjectIdentifier(mainWindow)
-        }
-    }
-
-    private func defaultPlaylistAnchor() -> NSWindow? {
-        guard let layoutState else { return self.mainWindow }
-
-        let anchor = WinampPanelDocking.playlistAnchor(
-            isEqualizerDocked: layoutState.isEqualizerDocked,
-            isEqualizerVisible: self.windows[.equalizer]?.isVisible == true,
-            isEqualizerFloating: self.isFloating[.equalizer, default: false]
-        )
-
-        switch anchor {
-        case .equalizer:
-            return self.windows[.equalizer]
-        case .main:
+    /// The window a docked panel sits directly below, resolved from the ordered stack model.
+    /// Returns the main window when the panel is the topmost docked entry.
+    private func dockAnchorWindow(for id: WinampPanelID) -> NSWindow? {
+        guard let anchorID = self.stackModel.anchorAbove(of: id, visible: self.visibleIDs()) else {
             return self.mainWindow
         }
-    }
-
-    /// Re-resolve the docked playlist's dock anchor from current panel visibility.
-    ///
-    /// `dockedBelow` is a cache seeded once at window creation. A visibility toggle (e.g. hiding
-    /// the EQ) otherwise leaves it pointing at the now-hidden EQ, so the playlist stacks below an
-    /// invisible window — an EQ-height gap under the main window. Re-running the tested
-    /// `WinampPanelDocking.playlistAnchor` decision on each sync keeps the cache honest. A
-    /// floating playlist keeps its user-chosen position and is left untouched.
-    private func reanchorDockedPlaylist() {
-        guard self.windows[.playlist] != nil,
-              !self.isFloating[.playlist, default: false],
-              let anchor = self.defaultPlaylistAnchor()
-        else { return }
-        self.dockedBelow[.playlist] = ObjectIdentifier(anchor)
-    }
-
-    private func dockAnchorWindow(for id: WinampPanelID) -> NSWindow? {
-        guard let dockID = self.dockedBelow[id] else { return self.mainWindow }
-        if let mainWindow, ObjectIdentifier(mainWindow) == dockID { return mainWindow }
-        for (_, window) in self.windows where ObjectIdentifier(window) == dockID {
-            return window
-        }
-        return self.mainWindow
-    }
-
-    private func visibleManagedWindows() -> [NSWindow] {
-        var result: [NSWindow] = []
-        if let mainWindow, mainWindow.isVisible {
-            result.append(mainWindow)
-        }
-        for id in self.panelIDs {
-            if let window = self.windows[id], window.isVisible {
-                result.append(window)
-            }
-        }
-        return result
+        return self.windows[anchorID] ?? self.mainWindow
     }
 
     private func positionPanel(_ id: WinampPanelID, below anchor: NSWindow, resize: Bool = true) {
@@ -441,7 +394,7 @@ final class WinampPanelWindowManager {
     private func handleWindowResized(_ resized: NSWindow) {
         if resized === self.windows[.playlist] {
             // Size is owned by `layoutState`; only re-anchor when docked.
-            if !self.isFloating[.playlist, default: false] {
+            if !self.isFloating(.playlist) {
                 self.repositionDockedPlaylist()
             }
             return
@@ -452,33 +405,25 @@ final class WinampPanelWindowManager {
         }
     }
 
+    /// Reclassify dock order and floating state from current window geometry (drag-end write-back).
+    /// Delegates the ordering to the pure `WinampPanelStackResolver`, then stores the result in the
+    /// model — the single source of truth that `stackDockedPanels` and `dockAnchorWindow` read back.
     private func refreshDockState() {
-        let visible = Set(self.visibleManagedWindows())
+        guard let mainFrame = self.mainWindow?.frame else { return }
 
-        // A panel is docked to whatever window directly abuts it from above — which may itself be a
-        // floating panel. This keeps a detached EQ+playlist sub-tree linked (and moving together)
-        // instead of only recognizing windows still connected to the main player.
+        var visibleFrames: [WinampPanelID: CGRect] = [:]
         for id in self.panelIDs {
-            guard let panel = self.windows[id], panel.isVisible else { continue }
-
-            if let anchor = self.anchorAbove(panel, in: visible) {
-                self.isFloating[id] = false
-                self.dockedBelow[id] = ObjectIdentifier(anchor)
-            } else {
-                self.isFloating[id] = true
+            if let window = self.windows[id], window.isVisible {
+                visibleFrames[id] = window.frame
             }
         }
-    }
 
-    private func anchorAbove(_ panel: NSWindow, in connected: Set<NSWindow>) -> NSWindow? {
-        let panelBox = WinampWindowSnap.Box(window: panel)
-        return connected
-            .filter { $0 !== panel }
-            .first { other in
-                let otherBox = WinampWindowSnap.Box(window: other)
-                return otherBox.minY > panelBox.minY
-                    && WinampWindowSnap.abuts(panelBox, otherBox)
-            }
+        let resolved = WinampPanelStackResolver.resolve(
+            preferenceOrder: self.stackModel.order,
+            visibleFrames: visibleFrames,
+            mainFrame: mainFrame
+        )
+        self.stackModel.update(order: resolved.order, floating: resolved.floating)
     }
 
     private func handleMainMiniaturized(_ window: NSWindow) {
@@ -495,31 +440,6 @@ final class WinampPanelWindowManager {
     private func handleMainDeminiaturized(_ window: NSWindow) {
         guard window === self.mainWindow else { return }
         self.syncPanels()
-    }
-
-    private func applySnapIfNeeded() {
-        guard let mainWindow else { return }
-
-        for id in self.panelIDs {
-            guard let panel = self.windows[id], panel.isVisible, self.isFloating[id, default: false] else {
-                continue
-            }
-
-            for anchor in self.visibleManagedWindows() where anchor !== panel {
-                if let snapped = WinampWindowSnap.snappedOrigin(for: panel, against: anchor) {
-                    self.setFrameOriginWithoutAnimation(panel, origin: snapped)
-                    self.isFloating[id] = false
-                    self.dockedBelow[id] = ObjectIdentifier(anchor)
-                    break
-                }
-            }
-        }
-
-        if self.windows[.equalizer]?.isVisible == true, !self.isFloating[.equalizer, default: false] {
-            self.dockedBelow[.equalizer] = ObjectIdentifier(mainWindow)
-        }
-
-        self.stackDockedPanels()
     }
 }
 
