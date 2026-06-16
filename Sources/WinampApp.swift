@@ -22,7 +22,7 @@ struct WinampApp: App {
                 .preferredColorScheme(.dark)
                 .background(Color.clear)
                 .onAppear {
-                    self.appDelegate.bind(audioPlayer: self.audioPlayer, playlistManager: self.playlistManager)
+                    self.appDelegate.bind(audioPlayer: self.audioPlayer)
                 }
         }
         .windowStyle(.hiddenTitleBar)
@@ -58,6 +58,7 @@ struct WinampApp: App {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static var isRunningUnderTest: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -65,13 +66,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private weak var audioPlayer: AudioPlayer?
-    private weak var playlistManager: PlaylistManager?
     private var keyboardEventMonitor: Any?
     private var clickEventMonitor: Any?
 
-    func bind(audioPlayer: AudioPlayer, playlistManager: PlaylistManager) {
+    func bind(audioPlayer: AudioPlayer) {
         self.audioPlayer = audioPlayer
-        self.playlistManager = playlistManager
     }
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -88,9 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let locationInContent = contentView.convert(event.locationInWindow, from: nil)
             let hitView = contentView.hitTest(locationInContent)
-            MainActor.assumeIsolated {
-                WinampPlaylistSearchFocus.handleClick(at: hitView)
-            }
+            WinampPlaylistSearchFocus.handleClick(at: hitView)
             return event
         }
     }
@@ -101,14 +98,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             if event.keyCode == 53,
                event.modifierFlags.intersection([.command, .option, .control]).isEmpty {
-                var dismissed = false
-                MainActor.assumeIsolated {
-                    if WinampPlaylistSearchFocus.isActive {
-                        WinampPlaylistSearchFocus.dismissActive()
-                        dismissed = true
-                    }
+                if WinampPlaylistSearchFocus.isActive {
+                    WinampPlaylistSearchFocus.dismissActive()
+                    return nil
                 }
-                if dismissed { return nil }
             }
 
             guard event.keyCode == 49,
@@ -126,20 +119,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
 
-            guard let self else { return event }
-
-            let player = self.audioPlayer
-            MainActor.assumeIsolated {
-                player?.togglePlayPause()
-            }
+            self?.audioPlayer?.togglePlayPause()
             return nil
-        }
-    }
-
-    func applicationDidResignActive(_: Notification) {
-        guard !Self.isRunningUnderTest else { return }
-        MainActor.assumeIsolated {
-            self.saveSessionIfNeeded()
         }
     }
 
@@ -153,16 +134,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSEvent.removeMonitor(monitor)
             self.clickEventMonitor = nil
         }
-        MainActor.assumeIsolated {
-            self.saveSessionIfNeeded()
-        }
-    }
-
-    @MainActor
-    private func saveSessionIfNeeded() {
-        DevelopmentSessionPersistence.saveCurrentSession(
-            audioPlayer: self.audioPlayer ?? .shared,
-            playlistManager: self.playlistManager ?? .shared
-        )
     }
 }

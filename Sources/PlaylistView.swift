@@ -423,8 +423,11 @@ private struct PlaylistTrackRow: View {
         } else {
             self.lastTappedTrack = trackId
             self.tapTimer?.invalidate()
+            let lastTapped = self.$lastTappedTrack
             self.tapTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { _ in
-                self.lastTappedTrack = nil
+                Task { @MainActor in
+                    lastTapped.wrappedValue = nil
+                }
             }
         }
     }

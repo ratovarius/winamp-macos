@@ -53,7 +53,9 @@ final class WinampWindowSnapTests: XCTestCase {
     func testTraceConnectedIncludesSnappedNeighbor() {
         let main = makeTestWindow(frame: CGRect(x: 50, y: 200, width: 275, height: 116))
         let eq = makeTestWindow(frame: CGRect(x: 50, y: 116, width: 275, height: 84))
-        let connected = WinampWindowSnap.traceConnected(from: main, among: [main, eq])
+        let connected = MainActor.assumeIsolated {
+            WinampWindowSnap.traceConnected(from: main, among: [main, eq])
+        }
         XCTAssertEqual(Set(connected.map(ObjectIdentifier.init)), Set([main, eq].map(ObjectIdentifier.init)))
     }
 

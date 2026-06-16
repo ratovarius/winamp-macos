@@ -62,27 +62,24 @@ class PlaylistManager: ObservableObject {
     private let bookmarkStore: SecurityScopedBookmarkStore
     private let fileService: PlaylistFileService
     private let stateStore: PlaylistStateStore
-    private let developmentSessionStore: DevelopmentSessionStore?
 
     init(
         audioPlayer: AudioPlaybackControlling = AudioPlayer.shared,
         restoreBookmarks: Bool = true,
         restorePlaylist: Bool = true,
         bookmarkStore: SecurityScopedBookmarkStore? = nil,
-        stateStore: PlaylistStateStore? = nil,
-        developmentSessionStore: DevelopmentSessionStore? = nil
+        stateStore: PlaylistStateStore? = nil
     ) {
         self.audioPlayer = audioPlayer
         let store = bookmarkStore ?? SecurityScopedBookmarkStore()
         self.bookmarkStore = store
         self.fileService = PlaylistFileService(bookmarkStore: store)
         self.stateStore = stateStore ?? PlaylistStateStore()
-        self.developmentSessionStore = developmentSessionStore
         if restoreBookmarks {
             store.restore()
         }
         if restorePlaylist {
-            self.restorePlaylistOnLaunch()
+            self.restorePersistedState()
         }
     }
 
@@ -359,24 +356,8 @@ class PlaylistManager: ObservableObject {
         )
     }
 
-    private func restorePlaylistOnLaunch() {
-        if DevelopmentSessionStore.isEnabled,
-           let snapshot = (self.developmentSessionStore ?? DevelopmentSessionStore()).load() {
-            (self.audioPlayer as? AudioPlayer)?.applySessionSettings(
-                volume: snapshot.volume,
-                eq: snapshot.eq
-            )
-            self.restorePersistedState(from: snapshot.playlist, playback: snapshot.playback)
-            return
-        }
-        self.restorePersistedState()
-    }
-
-    private func restorePersistedState(
-        from state: PersistedPlaylistState? = nil,
-        playback: DevelopmentSessionPlayback? = nil
-    ) {
-        guard let state = state ?? self.stateStore.loadState(), !state.trackPaths.isEmpty else { return }
+    private func restorePersistedState() {
+        guard let state = self.stateStore.loadState(), !state.trackPaths.isEmpty else { return }
 
         self.isRestoringState = true
         let paths = state.trackPaths
@@ -430,15 +411,7 @@ class PlaylistManager: ObservableObject {
                 self.persistState()
 
                 let track = restoredTracks[self.currentIndex]
-                self.audioPlayer.loadTrack(track) { [weak self] success in
-                    guard let self, success else { return }
-                    if let playback, playback.positionSeconds > 0 {
-                        self.audioPlayer.seek(to: playback.positionSeconds)
-                    }
-                    if playback?.wasPlaying == true {
-                        self.audioPlayer.play()
-                    }
-                }
+                self.audioPlayer.loadTrack(track, completion: nil)
             }
         }
     }

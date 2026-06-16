@@ -28,9 +28,6 @@ scripts/.venv/
 __pycache__/
 *.pyc
 
-# Local development session snapshot (optional WINAMP_DEV_SESSION_FILE override)
-dev-session.json
-
 # Local UI screenshot scratch
 .ui-review/
 

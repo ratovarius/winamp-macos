@@ -20,6 +20,7 @@ enum WinampWindowSnap {
             self.height = frame.height
         }
 
+        @MainActor
         init(window: NSWindow) {
             self.init(frame: window.frame)
         }
@@ -53,6 +54,7 @@ enum WinampWindowSnap {
     }
 
     /// Flood-fill from `start` across windows that share a snap edge (Webamp `traceConnection`).
+    @MainActor
     static func traceConnected(from start: NSWindow, among windows: [NSWindow]) -> [NSWindow] {
         let boxes = Dictionary(uniqueKeysWithValues: windows.map { ($0, Box(window: $0)) })
         var connected: Set<NSWindow> = [start]
@@ -113,6 +115,7 @@ enum WinampWindowSnap {
         return didSnap ? NSPoint(x: x, y: y) : nil
     }
 
+    @MainActor
     static func snappedOrigin(for window: NSWindow, against other: NSWindow) -> NSPoint? {
         self.snappedOrigin(
             box: Box(window: window),

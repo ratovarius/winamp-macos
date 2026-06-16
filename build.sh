@@ -6,6 +6,16 @@ set -e
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_NAME="Winamp"
 
+ARCH="$(uname -m)"
+case "$ARCH" in
+    arm64|x86_64) ;;
+    *)
+        echo "Unsupported macOS architecture: $ARCH" >&2
+        exit 1
+        ;;
+esac
+DESTINATION="platform=macOS,arch=${ARCH}"
+
 echo "🎵 Building Winamp macOS..."
 echo ""
 
@@ -28,6 +38,8 @@ while [[ $# -gt 0 ]]; do
             xcodebuild -project "${PROJECT_DIR}/${PROJECT_NAME}.xcodeproj" \
                        -scheme "${PROJECT_NAME}" \
                        -configuration "${CONFIGURATION}" \
+                       -destination "${DESTINATION}" \
+                       ONLY_ACTIVE_ARCH=YES \
                        clean
             echo "✅ Clean complete"
             echo ""
@@ -57,6 +69,8 @@ echo "🔨 Building ${CONFIGURATION} configuration..."
 xcodebuild -project "${PROJECT_DIR}/${PROJECT_NAME}.xcodeproj" \
            -scheme "${PROJECT_NAME}" \
            -configuration "${CONFIGURATION}" \
+           -destination "${DESTINATION}" \
+           ONLY_ACTIVE_ARCH=YES \
            build
 
 if [ $? -eq 0 ]; then

@@ -44,16 +44,40 @@ struct ReplayGain: Sendable, Equatable {
 enum ReplayGainReader {
     /// Reads ReplayGain tags from a file's metadata. Synchronous; call off the main thread.
     static func read(from url: URL) -> ReplayGain {
-        let asset = AVURLAsset(url: url)
-        var items = asset.metadata
-        for format in asset.availableMetadataFormats {
-            items.append(contentsOf: asset.metadata(forFormat: format))
+        let semaphore = DispatchSemaphore(value: 0)
+        let resultBox = ReplayGainResultBox()
+        Task {
+            let asset = AVURLAsset(url: url)
+            resultBox.value = await Self.readMetadata(from: asset)
+            semaphore.signal()
         }
+        semaphore.wait()
+        return resultBox.value
+    }
 
+    private final class ReplayGainResultBox: @unchecked Sendable {
+        var value = ReplayGain()
+    }
+
+    private static func readMetadata(from asset: AVURLAsset) async -> ReplayGain {
+        do {
+            var items = try await asset.load(.metadata)
+            let formats = try await asset.load(.availableMetadataFormats)
+            for format in formats {
+                let formatItems = try await asset.loadMetadata(for: format)
+                items.append(contentsOf: formatItems)
+            }
+            return await Self.parse(items: items)
+        } catch {
+            return ReplayGain()
+        }
+    }
+
+    private static func parse(items: [AVMetadataItem]) async -> ReplayGain {
         var result = ReplayGain()
         for item in items {
             guard let key = self.tagKey(for: item),
-                  let value = self.stringValue(for: item)
+                  let value = await self.stringValue(for: item)
             else { continue }
 
             switch key {
@@ -87,9 +111,9 @@ enum ReplayGainReader {
         return nil
     }
 
-    private static func stringValue(for item: AVMetadataItem) -> String? {
-        if let string = item.stringValue { return string }
-        if let number = item.numberValue { return number.stringValue }
+    private static func stringValue(for item: AVMetadataItem) async -> String? {
+        if let string = try? await item.load(.stringValue) { return string }
+        if let number = try? await item.load(.numberValue) { return number.stringValue }
         return nil
     }
 

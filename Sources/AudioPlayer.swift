@@ -227,29 +227,6 @@ class AudioPlayer: NSObject, ObservableObject {
         )
     }
 
-    func snapshotEQSettings() -> EQSettings {
-        self.currentEQSettings()
-    }
-
-    /// Applies volume and EQ from a development session snapshot (does not auto-play).
-    func applySessionSettings(volume: Float, eq settings: EQSettings) {
-        self.setVolume(volume)
-        self.eqBandValues = settings.bandGainsDB.map { $0 / 12 }
-        self.manualPreampValue = settings.preampGainDB / 12
-        self.eqPreampValue = self.manualPreampValue
-        self.eqEnabled = settings.eqEnabled
-        self.eqAutoEnabled = settings.autoEnabled
-        self.persistEQSettings()
-        self.audioQueue.async { [weak self] in
-            self?.applyEQSettings(settings)
-        }
-        if self.eqAutoEnabled {
-            self.applyAutoPreampCompensation()
-        } else {
-            self.applyPreampGainToEngine(decibels: settings.preampGainDB)
-        }
-    }
-
     private nonisolated func applyEQSettings(_ settings: EQSettings) {
         guard let eq = eqNode, let preamp = preampNode else { return }
         // Bit-perfect passthrough: when the EQ is disabled OR effectively flat (all bands and the
