@@ -28,7 +28,7 @@ and *infrastructure*.
 |---|---|---|
 | 1. Modular audio pipeline | **C+ → B** | **`AudioGraph` + `AudioEffectUnit` chain landed (P1 ✅)**; EQ, NowPlaying, AUTO-preamp, and remote commands extracted from the god object. Further transport decomposition is optional. |
 | 2. Excellent + performant visualizations | **B+ → A−** | **P2 ✅**: all 11 presets now render distinctly (the `% 4` ceiling is gone), `VizUniforms` layout is assertion-guarded, and pipeline-compile failures are logged. Multi-pass plugin refactor (V1) deferred. |
-| 3. Fully automated testability | **C+ → B−** | ~177 good unit tests exist; **CI now runs them (P0 ✅)**. Views/render/window still untested. |
+| 3. Fully automated testability | **C+ → B** | CI runs the suite (P0 ✅); **the Metal render path now has a GPU smoke harness (P3 ✅)** — all pipelines + every plugin/preset render-tested. SwiftUI views + window-drag still untested. |
 | 4. Profiling (CPU/mem/GPU) | **C → B−** | **`os_signpost` + GPU timing added (P0 ✅)**. MetricKit + memory instrumentation still open. |
 
 ---
@@ -168,8 +168,8 @@ tests block the release.
 
 | # | Issue | Severity |
 |---|---|---|
-| T1 | `AudioPlayer` carries **~10 `testing_` methods in the production type** ([`AudioPlayer.swift#L818-L905`](../Sources/AudioPlayer.swift#L818-L905)) — a symptom of the type being too coupled to mock cleanly. Extracting `AudioRenderingEngine` removes most. | 🟡 Medium |
-| T2 | Untested: all SwiftUI views, the Metal `draw` loop, window-drag management, and the actual playback lifecycle (only state transitions are tested). | 🟡 Medium |
+| T1 | `AudioPlayer` carries **~10 `testing_` methods in the production type** ([`AudioPlayer.swift`](../Sources/AudioPlayer.swift)) — a symptom of the type being too coupled to mock cleanly. The `AudioRenderingEngine` mock seam was **deliberately deferred** (these hooks assert real engine behavior; a mock would lower fidelity). | 🟡 Medium · deferred |
+| T2 | ~~Metal `draw` path untested~~ → **GPU smoke harness added (P3 ✅)**: [`MetalVisualizationSmokeTests`](../Tests/WinampTests/MetalVisualizationSmokeTests.swift) compiles every pipeline and renders every plugin + all 11 presets to an offscreen target (skips cleanly with no GPU). **Still untested:** SwiftUI views, window-drag management, and the live playback lifecycle (only state transitions are covered). | 🟡 Medium |
 | T3 | Pervasive singletons (`AudioFeatureBus.shared`, etc.) carry state *between* tests, undermining isolation. | 🟢 Low |
 
 ---
@@ -251,10 +251,13 @@ signposts cost ~nothing when no trace is recording and surface directly in Instr
    **data-driven preset system** (fix the `% 4` ceiling, V2), add a **compile-time
    `VizUniforms` layout assertion** (V3) + **logging on pipeline-compile failure** (V4).
 
-### P3 — testability depth (goal 3)  ⬜
+### P3 — testability depth (goal 3)  🟡 In progress
 
-6. Add **snapshot tests** for the retro chrome and a small **render-smoke harness** for
-   the Metal path (T2); reduce singleton state-bleed between tests (T3).
+6. 🟡 **Render + view coverage.** ✅ Metal GPU smoke harness
+   ([`MetalVisualizationSmokeTests`](../Tests/WinampTests/MetalVisualizationSmokeTests.swift)):
+   pipeline compilation + offscreen render of every plugin and all 11 presets, skipped
+   cleanly when no GPU is present. ⬜ Snapshot tests for the retro chrome; ⬜ reduce
+   singleton state-bleed between tests (T3).
 
 ### P4 — profiling depth (goal 4)  ⬜
 
@@ -272,3 +275,4 @@ signposts cost ~nothing when no trace is recording and surface directly in Instr
 | 2026-06-16 | P1 (decomposition): extracted `NowPlayingInfo` (lock-screen mapping) and the EQ AUTO-preamp math into testable units; deferred the `AudioRenderingEngine` mock seam (would lower real-engine test fidelity). |
 | 2026-06-16 | P1 (complete): extracted `RemoteCommandController` (media-key routing, unit-tested without the shared command center). Goal 1 met; transport left inline by design. |
 | 2026-06-16 | P2 (most): all 11 fullscreen presets render distinctly (removed shader `% 4` ceiling, V2); `VizUniforms` Swift/Metal layout assertion (V3); pipeline-compile failures logged (V4). V1 (multi-pass behind plugin protocol) deferred. |
+| 2026-06-16 | P3 (render smoke): added `MetalVisualizationSmokeTests` — compiles all pipelines and renders every plugin + all 11 presets to an offscreen GPU target, skipped when no Metal device. Locks down the shaders shipped in P2. |
