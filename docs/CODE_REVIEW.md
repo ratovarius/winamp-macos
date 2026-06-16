@@ -18,9 +18,9 @@
 | I1 | Debug `print()` in audio/EQ/volume hot paths | Important | ✅ Fixed |
 | I2 | Main‑thread coupling between SwiftUI and the Metal draw | Important | ✅ Fixed |
 | I3 | `AnimatedSongDisplay`: per‑frame `@State` churn + frame‑rate‑dependent motion | Important | ✅ Fixed |
-| I4 | `EqualizerView` graph: 80 `Path` allocations + 80 strokes per redraw | Important | ⬜ Not done |
-| I5 | `PlaylistView` re‑filters/re‑groups on every body eval | Important | 🟡 Partial |
-| S1 | `MTKView` never pauses when idle | Suggestion | ⬜ Not done |
+| I4 | `EqualizerView` graph: 80 `Path` allocations + 80 strokes per redraw | Important | ✅ Fixed |
+| I5 | `PlaylistView` re‑filters/re‑groups on every body eval | Important | ✅ Fixed |
+| S1 | `MTKView` never pauses when idle | Suggestion | ✅ Fixed |
 | S2 | FFT tap allocates a fresh PCM buffer + arrays per callback | Suggestion | ⬜ Not done |
 | S3 | Volume taper `p³` is aggressive | Suggestion | ℹ️ Design choice |
 | S4 | Dead code: unused `@Published` arrays + `SpectrumBar` | Suggestion | ⬜ Not done |
@@ -94,31 +94,48 @@ advancing by fixed pixels‑per‑frame (frame‑rate‑dependent judder).
 `Sources/Views/Player/SongMarqueeAnimation.swift` (17 unit tests). No `@State` writes
 during render; frame‑rate‑independent; identical look.
 
-### I4 — `EqualizerView` frequency graph redraw cost  ⬜ Not done
-`Sources/EqualizerView.swift` (`FrequencyResponseGraph`, ~line 334) builds **80 separate
-`Path`s and 80 `context.stroke` calls** (plus two Catmull‑Rom evals each) on every
-redraw — janky while dragging EQ sliders.
-**Recommended:** build one `Path` and stroke once (or a few color‑banded sub‑paths).
+### I4 — `EqualizerView` frequency graph redraw cost  ✅ Fixed
+`Sources/EqualizerView.swift` (`FrequencyResponseGraph`) built **80 separate `Path`s and
+80 `context.stroke` calls** (plus 160 Catmull‑Rom evals) on every redraw to color the
+response curve by height — janky while dragging EQ sliders.
+**Fix:** stroke the single Catmull‑Rom `curvePath` **once** with a vertical green→red
+`LinearGradient` (`heightColorStops`, sampled from `WinampColors.levelColor` at its
+0.45 / 0.72 break points). A vertical gradient at screen‑`y` evaluates to `level = 1 −
+y/height`, reproducing the former per‑segment coloring pixel‑for‑pixel at 1 stroke
+instead of 80. The now‑orphaned `CatmullRomSpline.point(at:)` evaluator was removed.
+The band faders (`ClassicEQSlider`) still fill each full bar with its value‑based color.
 
-### I5 — `PlaylistView` re‑filters/re‑groups on every body eval  🟡 Partial
+### I5 — `PlaylistView` re‑filters/re‑groups on every body eval  ✅ Fixed
 `filteredTracks` (enumerate + filter) and `groupedTracks` (`Dictionary(grouping:)` +
-sort) are computed properties re‑run on every body evaluation.
-**Done:** removed the 10 Hz invalidation trigger — the elapsed‑time label was extracted
-into `PlaylistElapsedTimeLabel` and `@EnvironmentObject audioPlayer` was removed from
-`PlaylistView`, so the list no longer recomputes 10×/sec. Verified gone from the CPU
-sample in steady state.
-**Still recommended (not done):** memoize the filter/group into `@State` updated on
-`searchText` / track‑list change, to avoid O(n log n) work for very large libraries
-during legitimate re‑renders (e.g. restore).
+sort) were computed properties re‑run on every body evaluation — so selection, hover,
+drag, and playback‑position changes all paid the O(n log n) grouping cost.
+**Fix (two parts):**
+1. Removed the 10 Hz invalidation trigger — the elapsed‑time label was extracted into
+   `PlaylistElapsedTimeLabel` and `@EnvironmentObject audioPlayer` was removed from
+   `PlaylistView`, so the list no longer recomputes 10×/sec.
+2. Memoized the filter/group into `@State` (`filteredTracks`/`groupedTracks`), refreshed
+   by `recomputeDerivedTracks()` only `.onAppear` and `.onChange(of: searchText)` /
+   `.onChange(of: playlistManager.tracks)`. The pure work lives in static
+   `filterTracks(_:searchText:)` / `groupTracks(_:)` helpers. `Track: Equatable` (by id),
+   so the `tracks` change signal also catches reorders and edits. Unrelated re‑renders
+   now read the cached arrays instead of recomputing.
 
 ---
 
 ## Suggestions / Minor
 
-### S1 — `MTKView` never pauses when idle  ⬜ Not done
-`view.isPaused = false` always (`MetalVisualizationView.swift`). When nothing is playing
-and the smoother has decayed, the loop still runs at display rate.
-**Recommended:** pause when idle, resume on playback — cuts idle GPU/CPU/power.
+### S1 — `MTKView` never pauses when idle  ✅ Fixed
+`view.isPaused = false` was always set, so when nothing was playing and the bars had
+decayed, the mini visualizer kept redrawing a static frame at the display rate.
+**Fix:** a pure, tested `Sources/Visualization/VisualizerIdleGate.swift` accumulates idle
+time and, after a ~1 s hold (so the spectrum persistence afterglow finishes fading on
+screen first), tells the renderer to pause. `MetalVisualizationRenderer.draw` treats a
+frame as “active” while playing or while the smoothed bars still carry visible energy, and
+sets `view.isPaused = true` after presenting the final decayed frame — **mini
+visualizers only**; the continuously‑animating fullscreen Milkdrop plugin is excluded.
+Resume is main‑thread and SwiftUI‑driven: `MetalVisualizationView` now takes `isPlaying`
+(from `AudioPlayer`) and calls `renderer.resume(_:)` from `updateNSView` when playback
+restarts. Cuts idle GPU/CPU/power to zero for the mini visualizer.
 
 ### S2 — FFT tap per‑callback allocations  ⬜ Not done
 `FFTSpectrumAnalyzer` allocates a fresh `AVAudioPCMBuffer` + `memcpy` per callback and
@@ -151,6 +168,7 @@ autoleveler, ReplayGain, EQ parsing, docking/snap geometry, the
 | Recommendation | Status |
 |---|---|
 | Extract pure pacing math for the visualizer (testable without GPU) | ✅ Done — `VisualizationPlayoutClock` + tests |
+| Extract pure idle/pause math for the visualizer (testable without GPU) | ✅ Done — `VisualizerIdleGate` + tests |
 | Extract the marquee animation into a pure, testable state machine | ✅ Done — `SongMarqueeAnimation` + tests |
 | Extract a pure `VolumeModel` (`taper`, `taper × ReplayGain`) from `AudioPlayer` | ⬜ Not done |
 | Inject a `Clock` into `MetalVisualizationRenderer` (remove direct `CACurrentMediaTime()`) | ⬜ Not done |
@@ -169,8 +187,6 @@ autoleveler, ReplayGain, EQ parsing, docking/snap geometry, the
 ---
 
 ## Recommended next actions
-1. **I4** — single‑`Path` EQ graph (smooths slider dragging).
-2. **I5** — memoize playlist filter/group (large‑library polish).
-3. **S1** — pause the visualizer when idle (power).
-4. **S4** — delete dead `@Published` arrays + `SpectrumBar`.
-5. Testability: extract `VolumeModel`; inject a `Clock` into the renderer.
+1. **S4** — delete dead `@Published` arrays + `SpectrumBar`.
+2. **S2** — reuse FFT scratch buffers (stop per‑callback allocations).
+3. Testability: extract `VolumeModel`; inject a `Clock` into the renderer.

@@ -27,6 +27,7 @@ enum VisualizationMode: Int, CaseIterable {
 // MARK: - Metal mini visualizer (spectrum / oscilloscope)
 
 struct ClassicVisualizerView: View {
+    @EnvironmentObject private var audioPlayer: AudioPlayer
     @AppStorage("visualizationMode") private var visualizationModeRaw: Int = 0
 
     private var visualizationMode: VisualizationMode {
@@ -34,13 +35,16 @@ struct ClassicVisualizerView: View {
     }
 
     var body: some View {
-        MetalVisualizationView(visualizationMode: self.visualizationMode)
-            .background(Color.black)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                let newMode = self.visualizationMode.advanced()
-                self.visualizationModeRaw = newMode.storageValue
-            }
+        MetalVisualizationView(
+            visualizationMode: self.visualizationMode,
+            isPlaying: self.audioPlayer.isPlaying
+        )
+        .background(Color.black)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            let newMode = self.visualizationMode.advanced()
+            self.visualizationModeRaw = newMode.storageValue
+        }
     }
 }
 

@@ -9,11 +9,31 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
     private var peakTracker = SpectrumPeakTracker()
     private var startTime = CACurrentMediaTime()
     private var lastFrameTime = CACurrentMediaTime()
+    private var idleGate = VisualizerIdleGate()
     private let inFlightSemaphore = DispatchSemaphore(
         value: MetalPipelineProvider.maxBuffersInFlight)
 
+    /// Energy below this (on the 0…1 smoothed bars) counts as visually silent.
+    private static let idleActivityThreshold: Float = 0.002
+
     var device: MTLDevice {
         self.pipelineProvider.device
+    }
+
+    /// Only the audio-reactive mini visualizers go static when idle. The fullscreen
+    /// Milkdrop plugin animates continuously, so it must never idle-pause.
+    private var isMiniKind: Bool {
+        switch self.plugin.kind {
+        case .miniSpectrum, .miniAnalyzer, .miniOscilloscope: true
+        case .fullscreen: false
+        }
+    }
+
+    /// Resumes the display loop after an idle pause (called when playback restarts).
+    func resume(_ view: MTKView) {
+        self.idleGate.wake()
+        self.lastFrameTime = CACurrentMediaTime()
+        view.isPaused = false
     }
 
     init(
@@ -36,6 +56,7 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
     private func resetTransientState() {
         self.featureSmoother = VisualizationFeatureSmoother()
         self.peakTracker.reset()
+        self.idleGate.wake()
         self.pipelineProvider.clearHistoryTexture()
     }
 
@@ -162,6 +183,15 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
             isPlaying: raw.isPlaying
         )
 
+        // Idle detection: a mini visualizer is "active" while playing or while the
+        // smoothed bars still carry visible energy (release tails). Once both are quiet
+        // for the gate's hold window, pause after this frame so the loop stops redrawing
+        // a static image. `resume(_:)` (driven by playback state) wakes it back up.
+        let peakEnergy = smoothedSpectrum.max() ?? 0
+        let isActive = raw.isPlaying || peakEnergy > Self.idleActivityThreshold
+        let shouldPause = self.isMiniKind
+            && self.idleGate.update(isActive: isActive, deltaTime: CFTimeInterval(deltaTime))
+
         let elapsed = now - self.startTime
 
         if case .miniSpectrum = self.plugin.kind {
@@ -210,6 +240,12 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
+
+        // Freeze the loop after presenting the final (already-decayed) frame. Resumed via
+        // `resume(_:)` when playback restarts.
+        if shouldPause {
+            view.isPaused = true
+        }
     }
 
     private func drawSpectrumWithPeakPersistence(
@@ -344,6 +380,7 @@ private enum MetalVisualizationViewFactory {
 
 struct MetalVisualizationView: NSViewRepresentable {
     let visualizationMode: VisualizationMode
+    let isPlaying: Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator(mode: self.visualizationMode)
@@ -359,8 +396,13 @@ struct MetalVisualizationView: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_: MTKView, context: Context) {
+    func updateNSView(_ view: MTKView, context: Context) {
         context.coordinator.setMode(self.visualizationMode)
+        // Playback (re)started: wake the loop. The renderer self-pauses again once the
+        // visualizer has gone idle (see `VisualizerIdleGate`).
+        if self.isPlaying {
+            context.coordinator.renderer.resume(view)
+        }
     }
 
     @MainActor
