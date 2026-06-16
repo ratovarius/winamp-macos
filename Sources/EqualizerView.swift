@@ -38,9 +38,12 @@ struct EqualizerView: View {
                 Spacer()
             }
             .padding(.horizontal, 6 * s)
-            .frame(height: 16 * s)
+            .frame(height: WinampMetrics.titleBarHeight * s)
             .frame(maxWidth: .infinity)
             .background(WinampTitleBarBackground())
+            .overlay(alignment: .leading) {
+                PanelTitleBarDragOverlay()
+            }
 
             VStack(spacing: 4 * s) {
                 // Curve row: ON/AUTO in left column, graph above bands, PRESETS on right.
@@ -200,7 +203,6 @@ struct ClassicEQSlider: View {
     @Binding var value: Float
     let height: CGFloat
     var scale: CGFloat = 1.0
-    @State private var isDragging = false
 
     private var trackWidth: CGFloat { 14 * scale }
     private var thumbWidth: CGFloat { 18 * scale }
@@ -273,11 +275,9 @@ struct ClassicEQSlider: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { gesture in
-                        self.isDragging = true
                         let p = 1 - (gesture.location.y / self.height)
                         self.value = Float(max(0, min(1, p)) * 2 - 1)
                     }
-                    .onEnded { _ in self.isDragging = false }
             )
         }
         .frame(width: self.thumbWidth, height: self.height)

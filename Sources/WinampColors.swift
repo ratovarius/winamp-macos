@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 enum WinampColors {
@@ -6,6 +7,7 @@ enum WinampColors {
 
     // Title bar colors (lighter steel-blue chrome with subtle pinstripe gradient)
     static let titleBar = Color(red: 60 / 255, green: 68 / 255, blue: 92 / 255)
+    static let nsTitleBar = NSColor(red: 60 / 255, green: 68 / 255, blue: 92 / 255, alpha: 1)
     static let titleBarInactive = Color(red: 52 / 255, green: 56 / 255, blue: 70 / 255)
     static let titleBarHighlight = Color(red: 86 / 255, green: 94 / 255, blue: 118 / 255)
 

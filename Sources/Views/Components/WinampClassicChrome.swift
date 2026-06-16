@@ -368,3 +368,37 @@ struct WinampSkinToggle: View {
         )
     }
 }
+
+// MARK: - Outer window frame (raised bevel around full panel stack)
+
+/// Classic raised outer bevel framing a Winamp window or detached panel.
+struct WinampOuterFrameModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .fixedSize()
+            .background(WinampColors.titleBar)
+            .overlay(
+                Rectangle()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                WinampColors.borderLight.opacity(0.9),
+                                WinampColors.borderLight.opacity(0.3),
+                                WinampColors.borderDark.opacity(0.5),
+                                WinampColors.borderDark.opacity(0.9),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
+                    .allowsHitTesting(false)
+            )
+    }
+}
+
+extension View {
+    func winampOuterFrame() -> some View {
+        self.modifier(WinampOuterFrameModifier())
+    }
+}
