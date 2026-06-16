@@ -26,14 +26,14 @@ and *infrastructure*.
 
 | Goal | Grade | One-line summary |
 |---|---|---|
-| 1. Modular audio pipeline | **C+ → B−** | **`AudioGraph` + `AudioEffectUnit` foundation landed** (EQ is the first unit; modules insert into an ordered chain). Remaining: `AudioRenderingEngine` seam + decompose the god object. |
+| 1. Modular audio pipeline | **C+ → B** | **`AudioGraph` + `AudioEffectUnit` chain landed (P1 ✅)**; EQ, NowPlaying, AUTO-preamp, and remote commands extracted from the god object. Further transport decomposition is optional. |
 | 2. Excellent + performant visualizations | **B+** | Performance engineering is excellent; the preset/extensibility system is the weak point. |
 | 3. Fully automated testability | **C+ → B−** | ~177 good unit tests exist; **CI now runs them (P0 ✅)**. Views/render/window still untested. |
 | 4. Profiling (CPU/mem/GPU) | **C → B−** | **`os_signpost` + GPU timing added (P0 ✅)**. MetricKit + memory instrumentation still open. |
 
 ---
 
-## Goal 1 — Modularity of the audio pipeline  🟡 (foundation landed in P1)
+## Goal 1 — Modularity of the audio pipeline  ✅ (P1 complete)
 
 > **Progress (2026-06-16, P1):** the hardcoded wiring below has been replaced by an
 > [`AudioGraph`](../Sources/Audio/AudioGraph.swift) that connects an ordered list of
@@ -42,14 +42,16 @@ and *infrastructure*.
 > ([`EQAudioEffect`](../Sources/Audio/EQAudioEffect.swift)). Adding a DSP module is now
 > `graph.insert(_:at:)` / `graph.append(_:)` — no hand-wiring. The EQ DSP *policy*
 > (flat/disabled passthrough, dB→linear preamp, AUTO preamp compensation) moved into
-> `EQAudioEffect`, and the lock-screen mapping moved into
-> [`NowPlayingInfo`](../Sources/NowPlayingInfo.swift) — both unit tested in isolation.
-> **Still open:** decomposing the remaining `AudioPlayer` god object (transport / volume /
-> remote-commands). The `AudioRenderingEngine` mock-engine seam was **deliberately
-> deferred**: the `testing_*` hooks it would remove currently assert *real* engine
-> behavior (auto-advance, transport actions, node reuse), so replacing them with a mock
-> would lower test fidelity for little gain. The original analysis below stands for the
-> remaining decomposition work.
+> `EQAudioEffect`, the lock-screen mapping into
+> [`NowPlayingInfo`](../Sources/NowPlayingInfo.swift), and media-key routing into
+> [`RemoteCommandController`](../Sources/RemoteCommandController.swift) — each unit tested
+> in isolation. **Intentionally left inline:** the transport methods
+> (`play`/`pause`/`seek`), which are tightly coupled to the serial `audioQueue` +
+> generation-ID race protection and are already covered by real-engine integration tests.
+> The `AudioRenderingEngine` mock-engine seam was **deliberately deferred**: the
+> `testing_*` hooks it would remove currently assert *real* engine behavior (auto-advance,
+> transport actions, node reuse), so replacing them with a mock would lower test fidelity
+> for little gain. The original analysis below stands as the historical baseline.
 
 **The biggest architectural gap relative to the stated goal** ("possibility to add audio
 modules to the pipeline").
@@ -218,16 +220,19 @@ signposts cost ~nothing when no trace is recording and surface directly in Instr
 2. ✅ **`os_signpost` instrumentation layer + GPU command-buffer timing**; retired the
    `print`-based probes. Unblocks goal 4.
 
-### P1 — the modularity foundation (goal 1)  🟡 In progress
+### P1 — the modularity foundation (goal 1)  ✅ Done (2026-06-16)
 
-3. 🟡 **Insertable effect chain.** ✅ `AudioGraph` + `AudioEffectUnit` with EQ as the
-   first unit (`EQAudioEffect`), EQ policy unit-tested. ⬜ Still extract an
-   **`AudioRenderingEngine` protocol** (mockable engine seam) to remove the `testing_*`
-   leakage from `AudioPlayer` (T1).
-4. 🟡 **Decompose `AudioPlayer`** into Transport / Graph / Volume+ReplayGain /
-   RemoteCommands / NowPlaying collaborators. ✅ `NowPlayingInfo` (lock-screen mapping)
-   and the EQ AUTO-preamp math extracted + unit-tested; ⬜ transport / remote-commands
-   still inline.
+3. ✅ **Insertable effect chain.** `AudioGraph` + `AudioEffectUnit` with EQ as the first
+   unit (`EQAudioEffect`), EQ policy unit-tested. The `AudioRenderingEngine` mock-engine
+   seam was **deliberately deferred** — the `testing_*` hooks it would remove assert
+   *real* engine behavior (auto-advance, transport, node reuse), so a mock would lower
+   fidelity. Revisit only when a concrete need (e.g. gapless/crossfade) forces the
+   boundary.
+4. ✅ **Decompose `AudioPlayer`.** `NowPlayingInfo` (lock-screen mapping), the EQ
+   AUTO-preamp math, and `RemoteCommandController` (media-key routing) extracted +
+   unit-tested. Transport (`play`/`pause`/`seek`) intentionally left inline: it is
+   threading-sensitive (serial `audioQueue` + generation IDs) and already covered by
+   real-engine integration tests, so extracting it now is high-risk / low-value.
 
 ### P2 — visualization extensibility (goal 2)  ⬜
 
@@ -254,3 +259,4 @@ signposts cost ~nothing when no trace is recording and surface directly in Instr
 | 2026-06-16 | Initial whole-project architecture review. P0 implemented: CI test gating + `os_signpost`/GPU-timing instrumentation; `print` probes and `DiagnosticLog` retired. |
 | 2026-06-16 | P1 (foundation): introduced `AudioGraph` + `AudioEffectUnit`; extracted the EQ as `EQAudioEffect` (policy unit-tested); `AudioPlayer` now builds its pipeline from an ordered effect chain instead of hardcoded wiring. |
 | 2026-06-16 | P1 (decomposition): extracted `NowPlayingInfo` (lock-screen mapping) and the EQ AUTO-preamp math into testable units; deferred the `AudioRenderingEngine` mock seam (would lower real-engine test fidelity). |
+| 2026-06-16 | P1 (complete): extracted `RemoteCommandController` (media-key routing, unit-tested without the shared command center). Goal 1 met; transport left inline by design. |

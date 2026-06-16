@@ -75,6 +75,7 @@ class AudioPlayer: NSObject, ObservableObject {
     var onNextTrackRequested: (@MainActor @Sendable () -> Void)?
     var onPreviousTrackRequested: (@MainActor @Sendable () -> Void)?
     private let eqSettingsStore: EQSettingsStore
+    private let remoteCommandController = RemoteCommandController()
     private var timer: Timer?
     private nonisolated(unsafe) var shouldAutoAdvance = true
     private nonisolated(unsafe) var isPlayingInternal = false
@@ -224,58 +225,17 @@ class AudioPlayer: NSObject, ObservableObject {
     }
 
     private func setupRemoteCommands() {
-        let commandCenter = MPRemoteCommandCenter.shared()
-
-        commandCenter.playCommand.isEnabled = true
-        commandCenter.playCommand.addTarget { [weak self] _ in
-            guard let self else { return .commandFailed }
-            Task { @MainActor in
-                if !self.isPlaying {
-                    if self.currentTime > 0, self.currentTrack != nil {
-                        self.resume()
-                    } else {
-                        self.play()
-                    }
-                }
-            }
-            return .success
-        }
-
-        commandCenter.pauseCommand.isEnabled = true
-        commandCenter.pauseCommand.addTarget { [weak self] _ in
-            guard let self else { return .commandFailed }
-            Task { @MainActor in
-                if self.isPlaying {
-                    self.pause()
-                }
-            }
-            return .success
-        }
-
-        commandCenter.togglePlayPauseCommand.isEnabled = true
-        commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
-            guard let self else { return .commandFailed }
-            Task { @MainActor in
-                self.togglePlayPause()
-            }
-            return .success
-        }
-
-        commandCenter.nextTrackCommand.isEnabled = true
-        commandCenter.nextTrackCommand.addTarget { [weak self] _ in
-            Task { @MainActor in
-                self?.onNextTrackRequested?()
-            }
-            return .success
-        }
-
-        commandCenter.previousTrackCommand.isEnabled = true
-        commandCenter.previousTrackCommand.addTarget { [weak self] _ in
-            Task { @MainActor in
-                self?.onPreviousTrackRequested?()
-            }
-            return .success
-        }
+        self.remoteCommandController.setHandlers(RemoteCommandController.Handlers(
+            play: { [weak self] in self?.playOrResume() },
+            pause: { [weak self] in
+                guard let self, self.isPlaying else { return }
+                self.pause()
+            },
+            toggle: { [weak self] in self?.togglePlayPause() },
+            next: { [weak self] in self?.onNextTrackRequested?() },
+            previous: { [weak self] in self?.onPreviousTrackRequested?() }
+        ))
+        self.remoteCommandController.installCommandTargets()
     }
 
     func loadTrack(_ track: Track, completion: (@MainActor @Sendable (Bool) -> Void)? = nil) {
