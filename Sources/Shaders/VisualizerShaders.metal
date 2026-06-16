@@ -145,6 +145,16 @@ fragment float4 spectrumCompositeFragment(float4 position [[position]],
     return float4(persisted, 1.0);
 }
 
+// Passthrough copy used to present an offscreen texture into a `framebufferOnly` drawable
+// (which cannot be a blit destination) via a fullscreen draw.
+fragment float4 copyFragment(float4 position [[position]],
+                             texture2d<float> source [[texture(0)]]) {
+    constexpr sampler frameSampler(mag_filter::nearest, min_filter::nearest);
+    float2 resolution = float2(source.get_width(), source.get_height());
+    float2 uv = (position.xy + 0.5) / resolution;
+    return float4(source.sample(frameSampler, uv).rgb, 1.0);
+}
+
 // MARK: - Mini oscilloscope (high-resolution line, classic Winamp style)
 
 struct ScopeLineVertexOut {

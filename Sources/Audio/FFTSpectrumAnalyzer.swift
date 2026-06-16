@@ -23,6 +23,10 @@ final class FFTSpectrumAnalyzer: @unchecked Sendable {
     var onSpectrumUpdate: (@Sendable ([Float]) -> Void)?
     var onWaveformUpdate: (@Sendable ([Float], [Float]) -> Void)?
     var onAnalysisUpdate: (@Sendable (_ bands: [Float], _ left: [Float], _ right: [Float]) -> Void)?
+    /// All FFT hop-frames computed from one audio buffer, plus how long that buffer
+    /// spans in seconds, so the consumer can play the frames out across the buffer's
+    /// duration instead of showing only the last hop (which steps at the tap rate).
+    var onSpectrumFrames: (@Sendable (_ frames: [[Float]], _ batchDuration: Double) -> Void)?
     let waveformChunkSize: Int
 
     init(
@@ -56,7 +60,27 @@ final class FFTSpectrumAnalyzer: @unchecked Sendable {
         guard format.sampleRate > 0 else { return }
 
         node.installTap(onBus: 0, bufferSize: AVAudioFrameCount(self.hopSize), format: format) { [weak self] buffer, _ in
+            Self.measureTapRate(frameLength: Int(buffer.frameLength), sampleRate: format.sampleRate)
             self?.enqueue(buffer: buffer)
+        }
+    }
+
+    // TEMP-DIAGNOSTIC: measure the real tap buffer size + callback rate.
+    private nonisolated(unsafe) static var tapMeasureCount = 0
+    private nonisolated(unsafe) static var tapMeasureStart = CFAbsoluteTimeGetCurrent()
+    private static let tapMeasureLock = NSLock()
+    private static func measureTapRate(frameLength: Int, sampleRate: Double) {
+        tapMeasureLock.lock()
+        defer { tapMeasureLock.unlock() }
+        tapMeasureCount += 1
+        if tapMeasureCount % 30 == 0 {
+            let now = CFAbsoluteTimeGetCurrent()
+            let elapsed = now - tapMeasureStart
+            let hz = Double(30) / max(elapsed, 0.000_1)
+            print(String(format: "[TAP-DIAG] frameLength=%d sampleRate=%.0f → callbackRate=%.1f Hz (buffer spans %.1f ms)",
+                         frameLength, sampleRate, hz, Double(frameLength) / sampleRate * 1000))
+            fflush(stdout)
+            tapMeasureStart = now
         }
     }
 
@@ -70,15 +94,21 @@ final class FFTSpectrumAnalyzer: @unchecked Sendable {
             guard let self else { return }
             AudioFeatureBus.shared.waveformRing.append(pcm: copy)
             let waveform = self.extractWaveformSamples(from: copy, sampleCount: self.waveformChunkSize)
+            var frames: [[Float]] = []
             let bands: [Float]
             if let streamed = self.analyzeStreaming(copy, onHop: { hopBands in
+                frames.append(hopBands)
                 self.onSpectrumUpdate?(hopBands)
             }) {
                 bands = streamed
             } else {
                 bands = self.analyze(copy)
+                frames.append(bands)
                 self.onSpectrumUpdate?(bands)
             }
+            let sampleRate = copy.format.sampleRate
+            let batchDuration = sampleRate > 0 ? Double(copy.frameLength) / sampleRate : 0
+            self.onSpectrumFrames?(frames, batchDuration)
             self.onAnalysisUpdate?(bands, waveform.left, waveform.right)
             self.onWaveformUpdate?(waveform.left, waveform.right)
         }
@@ -142,7 +172,7 @@ final class FFTSpectrumAnalyzer: @unchecked Sendable {
 
     private func analyzeStreaming(
         _ buffer: AVAudioPCMBuffer,
-        onHop: (@Sendable ([Float]) -> Void)? = nil
+        onHop: (([Float]) -> Void)? = nil
     ) -> [Float]? {
         guard let mono = self.makeMonoSamples(from: buffer) else { return nil }
 

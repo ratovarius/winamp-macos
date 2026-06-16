@@ -32,15 +32,36 @@ protocol MetalVisualizationPlugin: AnyObject {
     )
 }
 
+/// A small ring of GPU buffers so the CPU can fill frame N+1 while the GPU still reads frame N.
+/// Reusing a single shared buffer races the in-flight GPU read and tears the visualization.
+private final class FrameBufferRing {
+    private var buffers: [MTLBuffer?]
+
+    init(count: Int) {
+        self.buffers = Array(repeating: nil, count: max(count, 1))
+    }
+
+    func buffer(at index: Int, minimumLength: Int, device: MTLDevice) -> MTLBuffer? {
+        if self.buffers[index] == nil || (self.buffers[index]?.length ?? 0) < minimumLength {
+            self.buffers[index] = device.makeBuffer(length: minimumLength, options: .storageModeShared)
+        }
+        return self.buffers[index]
+    }
+}
+
 /// Per-view Metal buffers and offscreen textures. Pipeline states come from `MetalVisualizationEngine.shared`.
 final class MetalPipelineProvider {
+    /// Maximum frames the CPU may queue ahead of the GPU (triple buffering).
+    static let maxBuffersInFlight = 3
+
     private let engine: MetalVisualizationEngine
-    private var spectrumBuffer: MTLBuffer?
-    private var peakBuffer: MTLBuffer?
-    private var scopeColumnBuffer: MTLBuffer?
-    private var waveformLeftBuffer: MTLBuffer?
-    private var waveformRightBuffer: MTLBuffer?
-    private var uniformBuffer: MTLBuffer?
+    private let spectrumRing = FrameBufferRing(count: MetalPipelineProvider.maxBuffersInFlight)
+    private let peakRing = FrameBufferRing(count: MetalPipelineProvider.maxBuffersInFlight)
+    private let scopeColumnRing = FrameBufferRing(count: MetalPipelineProvider.maxBuffersInFlight)
+    private let waveformLeftRing = FrameBufferRing(count: MetalPipelineProvider.maxBuffersInFlight)
+    private let waveformRightRing = FrameBufferRing(count: MetalPipelineProvider.maxBuffersInFlight)
+    private let uniformRing = FrameBufferRing(count: MetalPipelineProvider.maxBuffersInFlight)
+    private var frameIndex = 0
 
     private(set) var scratchTexture: MTLTexture?
     private(set) var historyTexture: MTLTexture?
@@ -55,9 +76,15 @@ final class MetalPipelineProvider {
     var spectrumCompositePipeline: MTLRenderPipelineState? { self.engine.spectrumCompositePipeline }
     var oscilloscopePipeline: MTLRenderPipelineState? { self.engine.oscilloscopePipeline }
     var fullscreenPipeline: MTLRenderPipelineState? { self.engine.fullscreenPipeline }
+    var copyPipeline: MTLRenderPipelineState? { self.engine.copyPipeline }
 
     init(engine: MetalVisualizationEngine = .shared) {
         self.engine = engine
+    }
+
+    /// Rotates to the next buffer in each ring. Call once per frame, before writing any buffers.
+    func advanceFrame() {
+        self.frameIndex = (self.frameIndex + 1) % Self.maxBuffersInFlight
     }
 
     func ensureOffscreenTextures(width: Int, height: Int) {
@@ -72,26 +99,25 @@ final class MetalPipelineProvider {
     }
 
     func updateSpectrumBuffer(_ spectrum: [Float]) -> MTLBuffer? {
-        self.updateFloatBuffer(&self.spectrumBuffer, values: spectrum)
+        self.updateFloatBuffer(self.spectrumRing, values: spectrum)
     }
 
     func updatePeakBuffer(_ peaks: [Float]) -> MTLBuffer? {
-        self.updateFloatBuffer(&self.peakBuffer, values: peaks)
+        self.updateFloatBuffer(self.peakRing, values: peaks)
     }
 
     func updateScopeColumnBuffer(_ columns: [Float]) -> MTLBuffer? {
-        self.updateFloatBuffer(&self.scopeColumnBuffer, values: columns)
+        self.updateFloatBuffer(self.scopeColumnRing, values: columns)
     }
 
-    private func updateFloatBuffer(_ buffer: inout MTLBuffer?, values: [Float]) -> MTLBuffer? {
-        let byteCount = MemoryLayout<Float>.stride * values.count
-        if buffer == nil || buffer?.length ?? 0 < byteCount {
-            buffer = self.device.makeBuffer(length: byteCount, options: .storageModeShared)
+    private func updateFloatBuffer(_ ring: FrameBufferRing, values: [Float]) -> MTLBuffer? {
+        let byteCount = MemoryLayout<Float>.stride * max(values.count, 1)
+        guard let buffer = ring.buffer(at: self.frameIndex, minimumLength: byteCount, device: self.device) else {
+            return nil
         }
-        guard let buffer else { return nil }
         values.withUnsafeBytes { pointer in
             guard let baseAddress = pointer.baseAddress else { return }
-            memcpy(buffer.contents(), baseAddress, byteCount)
+            memcpy(buffer.contents(), baseAddress, MemoryLayout<Float>.stride * values.count)
         }
         return buffer
     }
@@ -117,18 +143,17 @@ final class MetalPipelineProvider {
     func updateWaveformBuffer(_ samples: [Float], channel: WaveformChannel) -> MTLBuffer? {
         switch channel {
         case .left:
-            self.updateFloatBuffer(&self.waveformLeftBuffer, values: samples)
+            self.updateFloatBuffer(self.waveformLeftRing, values: samples)
         case .right:
-            self.updateFloatBuffer(&self.waveformRightBuffer, values: samples)
+            self.updateFloatBuffer(self.waveformRightRing, values: samples)
         }
     }
 
     func updateUniformBuffer(_ uniforms: VizUniforms) -> MTLBuffer? {
         let byteCount = MemoryLayout<VizUniforms>.stride
-        if self.uniformBuffer == nil {
-            self.uniformBuffer = self.device.makeBuffer(length: byteCount, options: .storageModeShared)
+        guard let buffer = self.uniformRing.buffer(at: self.frameIndex, minimumLength: byteCount, device: self.device) else {
+            return nil
         }
-        guard let buffer = self.uniformBuffer else { return nil }
         var copy = uniforms
         memcpy(buffer.contents(), &copy, byteCount)
         return buffer

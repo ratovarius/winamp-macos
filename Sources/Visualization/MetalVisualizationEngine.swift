@@ -20,6 +20,7 @@ final class MetalVisualizationEngine: @unchecked Sendable {
     private var _spectrumCompositePipeline: MTLRenderPipelineState?
     private var _oscilloscopePipeline: MTLRenderPipelineState?
     private var _fullscreenPipeline: MTLRenderPipelineState?
+    private var _copyPipeline: MTLRenderPipelineState?
 
     var spectrumPipeline: MTLRenderPipelineState? {
         self.pipelineLock.lock()
@@ -64,6 +65,15 @@ final class MetalVisualizationEngine: @unchecked Sendable {
             self._fullscreenPipeline = self.makePipeline(vertex: "fullscreenVertex", fragment: "fullscreenFragment")
         }
         return self._fullscreenPipeline
+    }
+
+    var copyPipeline: MTLRenderPipelineState? {
+        self.pipelineLock.lock()
+        defer { self.pipelineLock.unlock() }
+        if self._copyPipeline == nil {
+            self._copyPipeline = self.makePipeline(vertex: "fullscreenVertex", fragment: "copyFragment")
+        }
+        return self._copyPipeline
     }
 
     private init?() {

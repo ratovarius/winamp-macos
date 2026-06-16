@@ -9,6 +9,8 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
     private var peakTracker = SpectrumPeakTracker()
     private var startTime = CACurrentMediaTime()
     private var lastFrameTime = CACurrentMediaTime()
+    private let inFlightSemaphore = DispatchSemaphore(
+        value: MetalPipelineProvider.maxBuffersInFlight)
 
     var device: MTLDevice {
         self.pipelineProvider.device
@@ -39,12 +41,99 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
 
     func mtkView(_: MTKView, drawableSizeWillChange _: CGSize) {}
 
-    func draw(in view: MTKView) {
-        guard let drawable = view.currentDrawable,
-              let commandBuffer = pipelineProvider.commandQueue.makeCommandBuffer()
-        else {
+    // TEMP-DIAGNOSTIC: measure the real display/draw rate.
+    private nonisolated(unsafe) static var drawMeasureCount = 0
+    private nonisolated(unsafe) static var drawMeasureStart = CACurrentMediaTime()
+    private static func measureDrawRate() {
+        drawMeasureCount += 1
+        if drawMeasureCount % 120 == 0 {
+            let now = CACurrentMediaTime()
+            let elapsed = now - drawMeasureStart
+            let hz = Double(120) / max(elapsed, 0.000_1)
+            print(String(format: "[DRAW-DIAG] drawRate=%.1f Hz", hz))
+            fflush(stdout)
+            drawMeasureStart = now
+        }
+    }
+
+    // TEMP-DIAGNOSTIC: measure how often the *raw* spectrum target actually changes
+    // (the effective data rate reaching the renderer). Pre-fix this is ~10 Hz; the
+    // hop-frame playout should raise it toward the draw rate.
+    private nonisolated(unsafe) static var effPrevSum: Float = -1
+    private nonisolated(unsafe) static var effChangeCount = 0
+    private nonisolated(unsafe) static var effDrawCount = 0
+    private nonisolated(unsafe) static var effStart = CACurrentMediaTime()
+    private static func measureEffectiveSpectrumRate(_ spectrum: [Float]) {
+        let sum = spectrum.reduce(0, +)
+        if abs(sum - effPrevSum) > 0.000_1 { effChangeCount += 1 }
+        effPrevSum = sum
+        effDrawCount += 1
+        if effDrawCount % 120 == 0 {
+            let now = CACurrentMediaTime()
+            let elapsed = now - effStart
+            let changeHz = Double(effChangeCount) / max(elapsed, 0.000_1)
+            print(
+                String(
+                    format: "[EFF-DIAG] effectiveSpectrumChange=%.1f Hz (%d/%d draws changed)",
+                    changeHz, effChangeCount, effDrawCount))
+            fflush(stdout)
+            effChangeCount = 0
+            effDrawCount = 0
+            effStart = now
+        }
+    }
+
+    // TEMP-DIAGNOSTIC: timestamp each time the FFT bar data (the raw spectrum target
+    // that drives bar heights) actually changes, with the gap since the previous
+    // change and the largest per-band delta. Many tiny changes vs a few large steps
+    // is the difference between a smooth sweep and a steppy "<10 Hz" look.
+    private nonisolated(unsafe) static var barPrevSpectrum: [Float] = []
+    private nonisolated(unsafe) static var barLastUpdateTime = 0.0
+    private static func logBarUpdate(_ spectrum: [Float], now: Double) {
+        guard Self.barPrevSpectrum.count == spectrum.count else {
+            // First frame (or band-count change): seed the baseline, don't log a bogus delta.
+            Self.barPrevSpectrum = spectrum
             return
         }
+        var maxBandDelta: Float = 0
+        for index in spectrum.indices {
+            maxBandDelta = max(maxBandDelta, abs(spectrum[index] - Self.barPrevSpectrum[index]))
+        }
+        Self.barPrevSpectrum = spectrum
+        guard maxBandDelta > 0.0001 else { return }
+        let deltaMs = Self.barLastUpdateTime > 0 ? (now - Self.barLastUpdateTime) * 1000 : 0
+        Self.barLastUpdateTime = now
+        DiagnosticLog.log(String(
+            format: "[BAR-UPDATE] %@ Δ=%.1fms maxBandΔ=%.3f",
+            DiagnosticLog.timestamp(), deltaMs, maxBandDelta
+        ))
+    }
+
+    func draw(in view: MTKView) {
+        // Triple-buffer back-pressure: block until the GPU finishes a frame so we never overwrite
+        // a buffer the GPU is still reading. The matching signal fires in the completion handler.
+        self.inFlightSemaphore.wait()
+
+        Self.measureDrawRate()
+
+        guard let commandBuffer = pipelineProvider.commandQueue.makeCommandBuffer() else {
+            self.inFlightSemaphore.signal()
+            return
+        }
+
+        let semaphore = self.inFlightSemaphore
+        commandBuffer.addCompletedHandler { _ in
+            semaphore.signal()
+        }
+
+        guard let drawable = view.currentDrawable else {
+            // Commit so the completion handler runs and balances the semaphore.
+            commandBuffer.commit()
+            return
+        }
+
+        // Rotate to this frame's buffer slot before any plugin writes into the rings.
+        self.pipelineProvider.advanceFrame()
 
         let now = CACurrentMediaTime()
         let deltaTime = Float(now - self.lastFrameTime)
@@ -57,7 +146,9 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
             waveformSampleCount = AudioFeatures.waveformSampleCount
         }
 
-        let raw = self.featureBus.snapshot(waveformSampleCount: waveformSampleCount)
+        let raw = self.featureBus.snapshot(at: now, waveformSampleCount: waveformSampleCount)
+        Self.measureEffectiveSpectrumRate(raw.spectrum)
+        Self.logBarUpdate(raw.spectrum, now: now)
         let smoothedSpectrum = self.featureSmoother.update(
             targets: raw.spectrum,
             isPlaying: raw.isPlaying,
@@ -102,20 +193,19 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
                 time: elapsed
             )
         } else {
-            guard let renderPassDescriptor = view.currentRenderPassDescriptor,
-                  let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor)
-            else {
-                return
+            if let renderPassDescriptor = view.currentRenderPassDescriptor,
+                let encoder = commandBuffer.makeRenderCommandEncoder(
+                    descriptor: renderPassDescriptor)
+            {
+                self.plugin.draw(
+                    encoder: encoder,
+                    features: features,
+                    time: elapsed,
+                    drawableSize: view.drawableSize,
+                    pipelines: self.pipelineProvider
+                )
+                encoder.endEncoding()
             }
-
-            self.plugin.draw(
-                encoder: encoder,
-                features: features,
-                time: elapsed,
-                drawableSize: view.drawableSize,
-                pipelines: self.pipelineProvider
-            )
-            encoder.endEncoding()
         }
 
         commandBuffer.present(drawable)
@@ -135,9 +225,9 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
         self.pipelineProvider.ensureOffscreenTextures(width: width, height: height)
 
         guard let scratch = self.pipelineProvider.scratchTexture,
-              let history = self.pipelineProvider.historyTexture,
-              let composite = self.pipelineProvider.compositeTexture,
-              let compositePipeline = self.pipelineProvider.spectrumCompositePipeline
+            let history = self.pipelineProvider.historyTexture,
+            let composite = self.pipelineProvider.compositeTexture,
+            let compositePipeline = self.pipelineProvider.spectrumCompositePipeline
         else {
             return
         }
@@ -148,7 +238,9 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
         barsPass.colorAttachments[0].storeAction = .store
         barsPass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
 
-        guard let barsEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: barsPass) else { return }
+        guard let barsEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: barsPass) else {
+            return
+        }
         self.plugin.draw(
             encoder: barsEncoder,
             features: features,
@@ -162,29 +254,22 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
         compositePass.colorAttachments[0].texture = composite
         compositePass.colorAttachments[0].loadAction = .clear
         compositePass.colorAttachments[0].storeAction = .store
-        compositePass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        compositePass.colorAttachments[0].clearColor = MTLClearColor(
+            red: 0, green: 0, blue: 0, alpha: 1)
 
-        guard let compositeEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: compositePass) else { return }
+        guard
+            let compositeEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: compositePass)
+        else { return }
         compositeEncoder.setRenderPipelineState(compositePipeline)
         compositeEncoder.setFragmentTexture(scratch, index: 0)
         compositeEncoder.setFragmentTexture(history, index: 1)
         var historyDecay = pow(0.91, deltaTime * 60)
-        compositeEncoder.setFragmentBytes(&historyDecay, length: MemoryLayout<Float>.stride, index: 0)
+        compositeEncoder.setFragmentBytes(
+            &historyDecay, length: MemoryLayout<Float>.stride, index: 0)
         compositeEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         compositeEncoder.endEncoding()
 
         guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else { return }
-        blitEncoder.copy(
-            from: composite,
-            sourceSlice: 0,
-            sourceLevel: 0,
-            sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-            sourceSize: MTLSize(width: width, height: height, depth: 1),
-            to: drawable.texture,
-            destinationSlice: 0,
-            destinationLevel: 0,
-            destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
-        )
         blitEncoder.copy(
             from: composite,
             sourceSlice: 0,
@@ -197,6 +282,24 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
             destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
         )
         blitEncoder.endEncoding()
+
+        // Present the composite into the drawable with a render pass. The drawable is
+        // `framebufferOnly` (the optimal config), which forbids using it as a blit destination,
+        // so present via a fullscreen copy draw instead of a blit.
+        let presentPass = MTLRenderPassDescriptor()
+        presentPass.colorAttachments[0].texture = drawable.texture
+        presentPass.colorAttachments[0].loadAction = .dontCare
+        presentPass.colorAttachments[0].storeAction = .store
+
+        guard let copyPipeline = self.pipelineProvider.copyPipeline,
+            let presentEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: presentPass)
+        else {
+            return
+        }
+        presentEncoder.setRenderPipelineState(copyPipeline)
+        presentEncoder.setFragmentTexture(composite, index: 0)
+        presentEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        presentEncoder.endEncoding()
     }
 
     private func drawAnalyzer(
@@ -207,8 +310,8 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
         time: CFTimeInterval
     ) {
         guard let renderPassDescriptor = view.currentRenderPassDescriptor,
-              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor),
-              let analyzer = self.plugin as? MiniAnalyzerMetalPlugin
+            let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor),
+            let analyzer = self.plugin as? MiniAnalyzerMetalPlugin
         else {
             return
         }

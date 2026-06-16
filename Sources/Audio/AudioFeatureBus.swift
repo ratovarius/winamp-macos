@@ -1,4 +1,5 @@
 import Foundation
+import QuartzCore
 
 /// Thread-safe snapshot of audio analysis data for the visualization render loop.
 struct AudioFeatures: Sendable {
@@ -55,17 +56,63 @@ final class AudioFeatureBus: @unchecked Sendable {
     let waveformRing = WaveformRingBuffer()
 
     private let lock = NSLock()
-    private var spectrumTargets = Array(repeating: Float(0), count: AudioFeatures.spectrumBandCount)
+    /// Intra-buffer FFT hop-frames from the most recent audio tap buffer. The tap
+    /// only fires ~10×/s (100 ms buffers), so a single frame per buffer makes the
+    /// spectrum step at 10 Hz. Storing every hop and playing them out by elapsed
+    /// time (see `VisualizationPlayoutClock`) lets the display loop sample fresh
+    /// detail every frame.
+    private var spectrumFrames: [[Float]] = [Array(repeating: Float(0), count: AudioFeatures.spectrumBandCount)]
+    private var spectrumBatchArrival: Double = 0
+    private var spectrumBatchDuration: Double = 0
     private var isPlaying = false
 
     private init() {}
 
-    /// Publishes raw FFT band targets from the audio analysis path (no smoothing).
-    func publishSpectrum(_ spectrum: [Float], isPlaying: Bool) {
+    /// Publishes the FFT hop-frames of one audio buffer (no smoothing), tagged with
+    /// the wall-clock arrival time and how long the buffer spans so the consumer can
+    /// pace them out across the buffer's duration.
+    func publishSpectrumFrames(
+        _ frames: [[Float]],
+        arrivalTime: Double,
+        batchDuration: Double,
+        isPlaying: Bool
+    ) {
+        Self.logFramesIn(frameCount: frames.count, batchDuration: batchDuration, isPlaying: isPlaying)
+        let normalized = frames.isEmpty
+            ? [Array(repeating: Float(0), count: AudioFeatures.spectrumBandCount)]
+            : frames.map(Self.normalizedSpectrum)
         self.lock.lock()
-        self.spectrumTargets = Self.normalizedSpectrum(spectrum)
+        self.spectrumFrames = normalized
+        self.spectrumBatchArrival = arrivalTime
+        self.spectrumBatchDuration = batchDuration
         self.isPlaying = isPlaying
         self.lock.unlock()
+    }
+
+    // TEMP-DIAGNOSTIC: timestamp each batch of FFT frames arriving from the audio
+    // tap — the true "new data" rate that feeds the bars, before playout pacing.
+    // Guarded to real audio buffers (batchDuration > 0) so the single-frame test
+    // path stays silent.
+    private nonisolated(unsafe) static var framesInLastTime = 0.0
+    private static let framesInLock = NSLock()
+    private static func logFramesIn(frameCount: Int, batchDuration: Double, isPlaying: Bool) {
+        guard batchDuration > 0 else { return }
+        Self.framesInLock.lock()
+        let now = CACurrentMediaTime()
+        let deltaMs = Self.framesInLastTime > 0 ? (now - Self.framesInLastTime) * 1000 : 0
+        Self.framesInLastTime = now
+        Self.framesInLock.unlock()
+        DiagnosticLog.log(String(
+            format: "[FRAMES-IN] %@ Δ=%.1fms frames=%d batch=%.1fms playing=%@",
+            DiagnosticLog.timestamp(), deltaMs, frameCount, batchDuration * 1000,
+            isPlaying ? "yes" : "no"
+        ))
+    }
+
+    /// Publishes a single spectrum frame (no intra-buffer detail). Convenience used
+    /// by tests and any single-shot path; always reads back as the newest frame.
+    func publishSpectrum(_ spectrum: [Float], isPlaying: Bool) {
+        self.publishSpectrumFrames([spectrum], arrivalTime: 0, batchDuration: 0, isPlaying: isPlaying)
     }
 
     func setPlaying(_ isPlaying: Bool) {
@@ -74,17 +121,33 @@ final class AudioFeatureBus: @unchecked Sendable {
         self.lock.unlock()
     }
 
-    func spectrumSnapshot() -> (targets: [Float], isPlaying: Bool) {
+    /// Returns the paced spectrum frame for the given display time plus the play state.
+    func spectrumSnapshot(at now: Double) -> (targets: [Float], isPlaying: Bool) {
         self.lock.lock()
-        let copy = (self.spectrumTargets, self.isPlaying)
+        let index = VisualizationPlayoutClock.frameIndex(
+            now: now,
+            batchArrival: self.spectrumBatchArrival,
+            frameCount: self.spectrumFrames.count,
+            batchDuration: self.spectrumBatchDuration
+        )
+        let targets = self.spectrumFrames[index]
+        let playing = self.isPlaying
         self.lock.unlock()
-        return copy
+        return (targets, playing)
     }
 
-    /// Builds a display snapshot: resamples waveform ring + returns raw spectrum targets.
+    /// Convenience snapshot at the current media time (used by tests).
+    func spectrumSnapshot() -> (targets: [Float], isPlaying: Bool) {
+        self.spectrumSnapshot(at: CACurrentMediaTime())
+    }
+
+    /// Builds a display snapshot: resamples waveform ring + returns the paced spectrum.
     /// Spectrum smoothing happens in `MetalVisualizationRenderer` at display rate.
-    func snapshot(waveformSampleCount: Int = AudioFeatures.waveformSampleCount) -> AudioFeatures {
-        let (targets, playing) = self.spectrumSnapshot()
+    func snapshot(
+        at now: Double = CACurrentMediaTime(),
+        waveformSampleCount: Int = AudioFeatures.waveformSampleCount
+    ) -> AudioFeatures {
+        let (targets, playing) = self.spectrumSnapshot(at: now)
         let waveform = self.waveformRing.readResampled(count: waveformSampleCount)
         return AudioFeatures(
             spectrum: targets,
