@@ -17,4 +17,10 @@ final class DisplayModeTests: XCTestCase {
             .cycled()
         XCTAssertEqual(backToStart, .scrolling)
     }
+
+    func testDisplayModeRawValueRoundTrip() {
+        for mode in [DisplayMode.scrolling, .vestaboard, .scrollingUp, .pixelated] {
+            XCTAssertEqual(DisplayMode(rawValue: mode.rawValue), mode)
+        }
+    }
 }
