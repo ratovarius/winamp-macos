@@ -12,6 +12,10 @@ final class FFTSpectrumAnalyzer: @unchecked Sendable {
     private var realBuffer: [Float]
     private var imagBuffer: [Float]
     private var magnitudes: [Float]
+    // Reusable per-hop scratch. Like `realBuffer`/`imagBuffer`/`magnitudes`, these are only
+    // touched on `processingQueue` (serial), so the bars/FFT path allocates nothing per hop.
+    private var windowScratch: [Float]
+    private var windowedScratch: [Float]
     private var bandMappings: [(start: Int, end: Int)] = []
     private var lastSampleRate: Float = 0
     private let processingQueue = DispatchQueue(label: "com.winamp.fft", qos: .userInteractive)
@@ -44,6 +48,8 @@ final class FFTSpectrumAnalyzer: @unchecked Sendable {
         self.realBuffer = [Float](repeating: 0, count: fftSize / 2)
         self.imagBuffer = [Float](repeating: 0, count: fftSize / 2)
         self.magnitudes = [Float](repeating: 0, count: fftSize / 2)
+        self.windowScratch = [Float](repeating: 0, count: fftSize)
+        self.windowedScratch = [Float](repeating: 0, count: fftSize)
         self.fftSetup = vDSP_create_fftsetup(self.log2n, FFTRadix(kFFTRadix2))
         vDSP_hann_window(&self.window, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
         self.prepareBandMappings(sampleRate: 44100)
@@ -196,11 +202,10 @@ final class FFTSpectrumAnalyzer: @unchecked Sendable {
     }
 
     private func linearizedWindow() -> [Float] {
-        var window = [Float](repeating: 0, count: self.fftSize)
         for index in 0 ..< self.fftSize {
-            window[index] = self.windowRing[(self.ringWriteIndex + index) % self.fftSize]
+            self.windowScratch[index] = self.windowRing[(self.ringWriteIndex + index) % self.fftSize]
         }
-        return window
+        return self.windowScratch
     }
 
     private func makeMonoSamples(from buffer: AVAudioPCMBuffer) -> [Float]? {
@@ -234,10 +239,11 @@ final class FFTSpectrumAnalyzer: @unchecked Sendable {
             self.prepareBandMappings(sampleRate: sampleRate)
         }
 
-        var mono = windowSamples
-        guard mono.count == self.fftSize else { return Array(repeating: 0, count: self.bandCount) }
+        guard windowSamples.count == self.fftSize else { return Array(repeating: 0, count: self.bandCount) }
 
-        vDSP_vmul(mono, 1, self.window, 1, &mono, 1, vDSP_Length(self.fftSize))
+        // Window directly into reusable scratch (was: copy the input, then window in place
+        // — one fftSize allocation per hop).
+        vDSP_vmul(windowSamples, 1, self.window, 1, &self.windowedScratch, 1, vDSP_Length(self.fftSize))
 
         self.realBuffer.withUnsafeMutableBufferPointer { realPtr in
             self.imagBuffer.withUnsafeMutableBufferPointer { imagPtr in
@@ -245,7 +251,7 @@ final class FFTSpectrumAnalyzer: @unchecked Sendable {
                     return
                 }
                 var splitComplex = DSPSplitComplex(realp: realBase, imagp: imagBase)
-                mono.withUnsafeBytes { rawBuffer in
+                self.windowedScratch.withUnsafeBytes { rawBuffer in
                     guard let baseAddress = rawBuffer.bindMemory(to: DSPComplex.self).baseAddress else {
                         return
                     }

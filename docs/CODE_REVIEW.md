@@ -21,7 +21,7 @@
 | I4 | `EqualizerView` graph: 80 `Path` allocations + 80 strokes per redraw | Important | ✅ Fixed |
 | I5 | `PlaylistView` re‑filters/re‑groups on every body eval | Important | ✅ Fixed |
 | S1 | `MTKView` never pauses when idle | Suggestion | ✅ Fixed |
-| S2 | FFT tap allocates a fresh PCM buffer + arrays per callback | Suggestion | ⬜ Not done |
+| S2 | FFT tap allocates a fresh PCM buffer + arrays per callback | Suggestion | 🟡 Partial |
 | S3 | Volume taper `p³` is aggressive | Suggestion | ℹ️ Design choice |
 | S4 | Dead code: unused `@Published` arrays + `SpectrumBar` | Suggestion | ✅ Fixed |
 | S5 | Per‑button `Task.sleep(80ms)`, per‑digit `Canvas` | Minor | ⬜ Not done (low value) |
@@ -137,10 +137,21 @@ Resume is main‑thread and SwiftUI‑driven: `MetalVisualizationView` now takes
 (from `AudioPlayer`) and calls `renderer.resume(_:)` from `updateNSView` when playback
 restarts. Cuts idle GPU/CPU/power to zero for the mini visualizer.
 
-### S2 — FFT tap per‑callback allocations  ⬜ Not done
-`FFTSpectrumAnalyzer` allocates a fresh `AVAudioPCMBuffer` + `memcpy` per callback and
-per‑hop `[Float]` arrays. It's on a background queue (won't glitch audio/UI) but churns
-memory. **Recommended:** reuse scratch buffers.
+### S2 — FFT tap per‑callback allocations  🟡 Partial
+`FFTSpectrumAnalyzer` allocated per‑hop `[Float]` arrays (the linearized FFT window and a
+copy of it for the Hann multiply — ~17 hops per 100 ms buffer, so the dominant churn) plus
+a fresh `AVAudioPCMBuffer` + `memcpy` per callback. It's on a background queue (won't
+glitch audio/UI) but churns memory.
+**Done:** the per‑hop arrays are gone — `linearizedWindow()` fills a reusable `windowScratch`
+and `bands(fromWindow:)` windows directly into a reusable `windowedScratch` instead of
+copying its input. These join the existing `realBuffer`/`imagBuffer`/`magnitudes` scratch,
+all confined to the serial `processingQueue`, so the FFT path now allocates nothing per
+hop (only the small `[bandCount]` result, which escapes into the playout frames). Output is
+bit‑identical — the existing FFT tests (single‑window + per‑hop streaming) pass unchanged.
+**Still recommended (not done):** the per‑callback `AVAudioPCMBuffer` copy is retained
+because its lifetime crosses the audio‑thread → queue boundary; reusing one scratch buffer
+there would race the next tap callback. A small buffer pool would remove it but adds
+concurrency surface not worth it for a ~10 Hz allocation.
 
 ### S3 — Volume taper `p³`  ℹ️ Design choice
 `volumeTaper` uses `p*p*p` (≈ −18 dB at the halfway point) — correct direction but
@@ -189,5 +200,4 @@ autoleveler, ReplayGain, EQ parsing, docking/snap geometry, the
 ---
 
 ## Recommended next actions
-1. **S2** — reuse FFT scratch buffers (stop per‑callback allocations).
-2. Testability: extract `VolumeModel`; inject a `Clock` into the renderer.
+1. Testability: extract `VolumeModel`; inject a `Clock` into the renderer.
