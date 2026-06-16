@@ -183,8 +183,8 @@ autoleveler, ReplayGain, EQ parsing, docking/snap geometry, the
 | Extract pure pacing math for the visualizer (testable without GPU) | ✅ Done — `VisualizationPlayoutClock` + tests |
 | Extract pure idle/pause math for the visualizer (testable without GPU) | ✅ Done — `VisualizerIdleGate` + tests |
 | Extract the marquee animation into a pure, testable state machine | ✅ Done — `SongMarqueeAnimation` + tests |
-| Extract a pure `VolumeModel` (`taper`, `taper × ReplayGain`) from `AudioPlayer` | ⬜ Not done |
-| Inject a `Clock` into `MetalVisualizationRenderer` (remove direct `CACurrentMediaTime()`) | ⬜ Not done |
+| Extract a pure `VolumeModel` (`taper`, `taper × ReplayGain`) from `AudioPlayer` | ✅ Done — `VolumeModel` + tests |
+| Inject a `Clock` into `MetalVisualizationRenderer` (remove direct `CACurrentMediaTime()`) | ✅ Done — `VisualizationClock`/`RenderFrameClock` + tests |
 | `AudioRenderingEngine` protocol seam over `AVAudioEngine`/nodes (mock EQ wiring) | ⬜ Not done |
 | Extract `PanelDragGeometry` from `WinampPanelWindowManager` | ⬜ Not done |
 
@@ -200,4 +200,7 @@ autoleveler, ReplayGain, EQ parsing, docking/snap geometry, the
 ---
 
 ## Recommended next actions
-1. Testability: extract `VolumeModel`; inject a `Clock` into the renderer.
+1. Remaining testability seams (lower value): `AudioRenderingEngine` protocol over
+   `AVAudioEngine`/nodes; extract `PanelDragGeometry` from `WinampPanelWindowManager`.
+2. Optional polish: S2's per‑callback buffer pool, S3 taper tuning, S5 press feedback —
+   only if profiling or feel calls for it.
