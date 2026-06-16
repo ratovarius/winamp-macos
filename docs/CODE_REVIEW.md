@@ -23,7 +23,7 @@
 | S1 | `MTKView` never pauses when idle | Suggestion | ✅ Fixed |
 | S2 | FFT tap allocates a fresh PCM buffer + arrays per callback | Suggestion | ⬜ Not done |
 | S3 | Volume taper `p³` is aggressive | Suggestion | ℹ️ Design choice |
-| S4 | Dead code: unused `@Published` arrays + `SpectrumBar` | Suggestion | ⬜ Not done |
+| S4 | Dead code: unused `@Published` arrays + `SpectrumBar` | Suggestion | ✅ Fixed |
 | S5 | Per‑button `Task.sleep(80ms)`, per‑digit `Canvas` | Minor | ⬜ Not done (low value) |
 
 \* B was discovered during measurement, not the original static review; it is the data‑rate
@@ -147,11 +147,13 @@ memory. **Recommended:** reuse scratch buffers.
 quite aggressive; the lower half of the fader feels very quiet. Consider `p²`/hybrid.
 Not a bug.
 
-### S4 — Dead code  ⬜ Not done
+### S4 — Dead code  ✅ Fixed
 `AudioPlayer.spectrumData`, `AudioPlayer.waveformLeft`, `AudioPlayer.waveformRight`
-(`@Published`, ~lines 22–24) appear unused now that analysis publishes only to
-`AudioFeatureBus`; `SpectrumBar` in `Sources/SpectrumView.swift` is unused. Removing
-them clarifies the data flow.
+(`@Published`) were unused once analysis began publishing only to `AudioFeatureBus`, and
+`SpectrumBar` in `Sources/SpectrumView.swift` had no call sites.
+**Fix:** removed all four (reference search confirmed zero usages beyond their
+declarations). The visualization data now flows solely through `AudioFeatureBus`, which
+the removal makes explicit.
 
 ### S5 — Press feedback / seven‑segment  ⬜ Not done (low value)
 Per‑button `Task.sleep(80ms)` for press feedback and per‑digit `SevenSegmentDisplay`
@@ -187,6 +189,5 @@ autoleveler, ReplayGain, EQ parsing, docking/snap geometry, the
 ---
 
 ## Recommended next actions
-1. **S4** — delete dead `@Published` arrays + `SpectrumBar`.
-2. **S2** — reuse FFT scratch buffers (stop per‑callback allocations).
-3. Testability: extract `VolumeModel`; inject a `Clock` into the renderer.
+1. **S2** — reuse FFT scratch buffers (stop per‑callback allocations).
+2. Testability: extract `VolumeModel`; inject a `Clock` into the renderer.

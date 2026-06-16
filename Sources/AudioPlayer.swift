@@ -35,9 +35,6 @@ class AudioPlayer: NSObject, ObservableObject {
     @Published var volume: Float = 0.75
     @Published var balance: Float = 0
     @Published var currentTrack: Track?
-    @Published var spectrumData: [Float] = Array(repeating: 0, count: AudioFeatures.spectrumBandCount)
-    @Published var waveformLeft: [Float] = []
-    @Published var waveformRight: [Float] = []
     @Published var currentLyrics: [LyricLine] = []
     @Published var currentLyricText: String?
     @Published var currentBitrate: Int = 128

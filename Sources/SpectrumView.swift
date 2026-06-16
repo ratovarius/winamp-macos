@@ -53,29 +53,3 @@ struct SpectrumView: View {
         ClassicVisualizerView()
     }
 }
-
-struct SpectrumBar: View {
-    let value: Float
-    let height: CGFloat
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
-
-            Rectangle()
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            WinampColors.spectrumDot,
-                            WinampColors.spectrumDot.opacity(0.7),
-                            WinampColors.spectrumDot.opacity(0.4),
-                        ],
-                        startPoint: .bottom,
-                        endPoint: .top
-                    )
-                )
-                .frame(height: CGFloat(self.value) * self.height * 0.8)
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
