@@ -490,7 +490,7 @@ class AudioPlayer: NSObject, ObservableObject {
     func play() {
         self.testing_lastTransportAction = .play
         let normalization = self.volumeNormalizationEnabled ? self.normalizationLinearGain : 1.0
-        let volume = max(0, min(4, Self.volumeTaper(self.volume) * normalization))
+        let volume = VolumeModel.appliedGain(position: self.volume, normalizationGain: normalization)
         let balance = self.balance
         self.audioQueue.async { [weak self] in
             guard let self else { return }
@@ -676,22 +676,10 @@ class AudioPlayer: NSObject, ObservableObject {
         self.applyPlayerVolume()
     }
 
-    /// Maps the linear 0…1 slider position to an amplitude using an audio (perceptual) taper.
-    ///
-    /// A 1:1 slider→amplitude mapping crowds almost all perceived loudness change into the bottom
-    /// of the travel. Real faders use a curve that's roughly logarithmic in loudness; a cubic taper
-    /// (`position³`) is the common, cheap approximation — full-scale at 1.0, ~−18 dB at the halfway
-    /// point — so the slider feels even across its range.
-    private nonisolated static func volumeTaper(_ position: Float) -> Float {
-        let p = max(0, min(1, position))
-        return p * p * p
-    }
-
     /// Applies the current slider position (tapered) and normalization gain to the player node.
     private func applyPlayerVolume() {
-        let tapered = Self.volumeTaper(self.volume)
         let normalization = self.volumeNormalizationEnabled ? self.normalizationLinearGain : 1.0
-        let applied = max(0, min(4, tapered * normalization))
+        let applied = VolumeModel.appliedGain(position: self.volume, normalizationGain: normalization)
         self.audioQueue.async { [weak self] in
             self?.playerNode?.volume = applied
         }
