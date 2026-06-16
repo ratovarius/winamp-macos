@@ -7,8 +7,7 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
     private let pipelineProvider: MetalPipelineProvider
     private var featureSmoother = VisualizationFeatureSmoother()
     private var peakTracker = SpectrumPeakTracker()
-    private var startTime = CACurrentMediaTime()
-    private var lastFrameTime = CACurrentMediaTime()
+    private var frameClock: RenderFrameClock
     private var idleGate = VisualizerIdleGate()
     private let inFlightSemaphore = DispatchSemaphore(
         value: MetalPipelineProvider.maxBuffersInFlight)
@@ -32,18 +31,20 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
     /// Resumes the display loop after an idle pause (called when playback restarts).
     func resume(_ view: MTKView) {
         self.idleGate.wake()
-        self.lastFrameTime = CACurrentMediaTime()
+        self.frameClock.resetDelta()
         view.isPaused = false
     }
 
     init(
         featureBus: AudioFeatureBus = .shared,
         plugin: MetalVisualizationPlugin,
-        pipelineProvider: MetalPipelineProvider = MetalPipelineProvider()
+        pipelineProvider: MetalPipelineProvider = MetalPipelineProvider(),
+        clock: VisualizationClock = MediaTimeClock()
     ) {
         self.featureBus = featureBus
         self.plugin = plugin
         self.pipelineProvider = pipelineProvider
+        self.frameClock = RenderFrameClock(clock: clock)
         super.init()
     }
 
@@ -156,9 +157,8 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
         // Rotate to this frame's buffer slot before any plugin writes into the rings.
         self.pipelineProvider.advanceFrame()
 
-        let now = CACurrentMediaTime()
-        let deltaTime = Float(now - self.lastFrameTime)
-        self.lastFrameTime = now
+        let (now, elapsed, rawDelta) = self.frameClock.tick()
+        let deltaTime = Float(rawDelta)
 
         let waveformSampleCount: Int
         if case .miniOscilloscope = self.plugin.kind {
@@ -191,8 +191,6 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
         let isActive = raw.isPlaying || peakEnergy > Self.idleActivityThreshold
         let shouldPause = self.isMiniKind
             && self.idleGate.update(isActive: isActive, deltaTime: CFTimeInterval(deltaTime))
-
-        let elapsed = now - self.startTime
 
         if case .miniSpectrum = self.plugin.kind {
             self.drawSpectrumWithPeakPersistence(
