@@ -31,6 +31,7 @@ class AudioPlayer: NSObject, ObservableObject {
         get { self.playbackClock.currentTime }
         set { self.playbackClock.currentTime = newValue }
     }
+
     @Published var duration: TimeInterval = 0
     @Published var volume: Float = 0.75
     @Published var balance: Float = 0
@@ -57,11 +58,12 @@ class AudioPlayer: NSObject, ObservableObject {
     /// Linear gain applied to the player node for normalization (1.0 = no change).
     private nonisolated(unsafe) var normalizationLinearGain: Float = 1.0
 
+    private nonisolated(unsafe) var audioGraph: AudioGraph?
     private nonisolated(unsafe) var audioEngine: AVAudioEngine?
     private nonisolated(unsafe) var playerNode: AVAudioPlayerNode?
     private nonisolated(unsafe) var audioFile: AVAudioFile?
-    private nonisolated(unsafe) var eqNode: AVAudioUnitEQ?
-    private nonisolated(unsafe) var preampNode: AVAudioMixerNode?
+    /// The Winamp EQ stage of the processing graph (preamp + parametric EQ).
+    private nonisolated(unsafe) var eqEffect: EQAudioEffect?
     private nonisolated(unsafe) var spectrumAnalyzer: FFTSpectrumAnalyzer?
     private nonisolated(unsafe) var spectrumTapInstalled = false
     /// Cached preamp linear gain for spectrum debug logging (tap already includes preamp in the audio path).
@@ -137,33 +139,19 @@ class AudioPlayer: NSObject, ObservableObject {
     private func setupAudioEngine() {
         var engineStarted = false
         self.audioQueue.sync {
-            self.audioEngine = AVAudioEngine()
-            self.playerNode = AVAudioPlayerNode()
+            // The processing pipeline is declared as an ordered effect chain rather than
+            // hand-wired here, so future DSP modules are inserted via `AudioGraph`, not by
+            // editing this method. Today the chain is a single stage: the Winamp EQ.
+            let eqEffect = EQAudioEffect()
+            let graph = AudioGraph()
+            graph.build(effects: [eqEffect])
 
-            self.eqNode = AVAudioUnitEQ(numberOfBands: 10)
-            self.preampNode = AVAudioMixerNode()
+            self.audioGraph = graph
+            self.eqEffect = eqEffect
+            self.audioEngine = graph.engine
+            self.playerNode = graph.source
 
-            guard let eq = eqNode else { return }
-
-            for (index, frequency) in WinampEQBands.centerFrequenciesHz.enumerated() {
-                let band = eq.bands[index]
-                band.frequency = frequency
-                band.bandwidth = WinampEQBands.bandwidthsOctaves[index]
-                band.bypass = false
-                band.filterType = .parametric
-                band.gain = 0
-            }
-
-            guard let engine = audioEngine, let player = playerNode, let preamp = preampNode else { return }
-
-            engine.attach(player)
-            engine.attach(preamp)
-            engine.attach(eq)
-            engine.connect(player, to: preamp, format: nil)
-            engine.connect(preamp, to: eq, format: nil)
-            engine.connect(eq, to: engine.mainMixerNode, format: nil)
-
-            engineStarted = self.startEngineIfNeeded(engine)
+            engineStarted = self.startEngineIfNeeded(graph.engine)
 
             self.installSpectrumTapIfNeeded()
         }
@@ -171,7 +159,7 @@ class AudioPlayer: NSObject, ObservableObject {
     }
 
     private func installSpectrumTapIfNeeded() {
-        guard !self.spectrumTapInstalled, let engine = self.audioEngine else { return }
+        guard !self.spectrumTapInstalled, let graph = self.audioGraph else { return }
 
         let analyzer = FFTSpectrumAnalyzer(bandCount: AudioFeatures.spectrumBandCount)
         analyzer.onSpectrumFrames = { [weak self] frames, batchDuration in
@@ -193,7 +181,7 @@ class AudioPlayer: NSObject, ObservableObject {
                 context: String(format: "preamp=%.1fdB tap=mainMixer", 20 * log10(max(self.spectrumDebugPreampLinear, 0.000_01)))
             )
         }
-        analyzer.installTap(on: engine.mainMixerNode)
+        analyzer.installTap(on: graph.tapPoint)
         self.spectrumAnalyzer = analyzer
         self.spectrumTapInstalled = true
     }
@@ -228,29 +216,11 @@ class AudioPlayer: NSObject, ObservableObject {
     }
 
     private nonisolated func applyEQSettings(_ settings: EQSettings) {
-        guard let eq = eqNode, let preamp = preampNode else { return }
-        // Bit-perfect passthrough: when the EQ is disabled OR effectively flat (all bands and the
-        // preamp at ~0 dB), bypass the EQ node and pin the preamp to exact unity so samples pass
-        // through untouched rather than round-tripping the parametric filters at "0 dB".
-        let flat = Self.isEffectivelyFlat(settings)
-        let bypass = !settings.eqEnabled || flat
-        eq.bypass = bypass
-        let linearGain = (bypass && flat) ? 1.0 : Self.linearGain(fromDecibels: settings.preampGainDB)
-        preamp.outputVolume = linearGain
-        self.spectrumDebugPreampLinear = linearGain
-        for (index, gain) in settings.bandGainsDB.enumerated() where index < eq.bands.count {
-            eq.bands[index].gain = gain
-        }
-    }
-
-    /// True when every band and the preamp sit within a hair of 0 dB — i.e. the EQ would be a no-op.
-    private nonisolated static func isEffectivelyFlat(_ settings: EQSettings, toleranceDB: Float = 0.05) -> Bool {
-        guard abs(settings.preampGainDB) <= toleranceDB else { return false }
-        return settings.bandGainsDB.allSatisfy { abs($0) <= toleranceDB }
-    }
-
-    private nonisolated static func linearGain(fromDecibels decibels: Float) -> Float {
-        min(max(pow(10, decibels / 20), 0.05), 4)
+        guard let eqEffect = self.eqEffect else { return }
+        // Bit-perfect passthrough (bypass + unity preamp when flat/disabled) lives in the
+        // EQ effect so the policy is testable without an engine; cache the applied gain
+        // for the spectrum-debug context string.
+        self.spectrumDebugPreampLinear = eqEffect.apply(settings)
     }
 
     private func setupRemoteCommands() {
@@ -434,7 +404,7 @@ class AudioPlayer: NSObject, ObservableObject {
 
     /// Stops scheduled audio and reuses the attached player node for the next file.
     private nonisolated func preparePlayerNodeForNewTrack() {
-        guard let engine = audioEngine, let preamp = preampNode else { return }
+        guard let engine = audioEngine else { return }
 
         if let player = playerNode {
             player.stop()
@@ -442,10 +412,13 @@ class AudioPlayer: NSObject, ObservableObject {
             return
         }
 
+        // Defensive: if the source was ever torn down, recreate it and reconnect to the
+        // head of the effect chain (the EQ preamp).
+        guard let destination = self.eqEffect?.inputNode ?? self.audioGraph?.tapPoint else { return }
         let player = AVAudioPlayerNode()
         self.playerNode = player
         engine.attach(player)
-        engine.connect(player, to: preamp, format: nil)
+        engine.connect(player, to: destination, format: nil)
     }
 
     private func updateNowPlayingInfo() {
@@ -699,8 +672,7 @@ class AudioPlayer: NSObject, ObservableObject {
         if self.eqAutoEnabled {
             // AUTO recomputes preamp; bands are never effectively flat here so apply directly.
             self.audioQueue.async { [weak self] in
-                guard let self, let eq = self.eqNode, band < eq.bands.count else { return }
-                eq.bands[band].gain = gain
+                self?.eqEffect?.setBandGain(band, decibels: gain)
             }
             self.applyAutoPreampCompensation()
             return
@@ -761,10 +733,10 @@ class AudioPlayer: NSObject, ObservableObject {
     }
 
     private func applyPreampGainToEngine(decibels: Float) {
-        let linearGain = Self.linearGain(fromDecibels: decibels)
+        let linearGain = EQAudioEffect.linearGain(fromDecibels: decibels)
         self.spectrumDebugPreampLinear = linearGain
         self.audioQueue.async { [weak self] in
-            self?.preampNode?.outputVolume = linearGain
+            self?.eqEffect?.setPreampGain(decibels: decibels)
         }
     }
 
@@ -788,7 +760,7 @@ class AudioPlayer: NSObject, ObservableObject {
         self.eqAutoEnabled = false
         self.persistEQSettings()
         self.audioQueue.async { [weak self] in
-            self?.eqNode?.bypass = false
+            self?.eqEffect?.setBypass(false)
         }
     }
 

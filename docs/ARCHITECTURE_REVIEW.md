@@ -26,14 +26,25 @@ and *infrastructure*.
 
 | Goal | Grade | One-line summary |
 |---|---|---|
-| 1. Modular audio pipeline | **C+** | Graph is hardcoded; `AudioPlayer` is a 996-line god object. No effect-node abstraction. |
+| 1. Modular audio pipeline | **C+ → B−** | **`AudioGraph` + `AudioEffectUnit` foundation landed** (EQ is the first unit; modules insert into an ordered chain). Remaining: `AudioRenderingEngine` seam + decompose the god object. |
 | 2. Excellent + performant visualizations | **B+** | Performance engineering is excellent; the preset/extensibility system is the weak point. |
 | 3. Fully automated testability | **C+ → B−** | ~177 good unit tests exist; **CI now runs them (P0 ✅)**. Views/render/window still untested. |
 | 4. Profiling (CPU/mem/GPU) | **C → B−** | **`os_signpost` + GPU timing added (P0 ✅)**. MetricKit + memory instrumentation still open. |
 
 ---
 
-## Goal 1 — Modularity of the audio pipeline  ⬜
+## Goal 1 — Modularity of the audio pipeline  🟡 (foundation landed in P1)
+
+> **Progress (2026-06-16, P1):** the hardcoded wiring below has been replaced by an
+> [`AudioGraph`](../Sources/Audio/AudioGraph.swift) that connects an ordered list of
+> [`AudioEffectUnit`](../Sources/Audio/AudioEffectUnit.swift)s
+> (`source → effects → mainMixer`), with the EQ extracted as the first unit
+> ([`EQAudioEffect`](../Sources/Audio/EQAudioEffect.swift)). Adding a DSP module is now
+> `graph.insert(_:at:)` / `graph.append(_:)` — no hand-wiring. The EQ DSP *policy*
+> (flat/disabled passthrough, dB→linear preamp) moved into `EQAudioEffect` and is unit
+> tested in isolation. **Still open:** the `AudioRenderingEngine` seam and decomposing
+> the rest of the `AudioPlayer` god object (transport / volume / remote-commands /
+> now-playing). The original analysis below stands for that remaining work.
 
 **The biggest architectural gap relative to the stated goal** ("possibility to add audio
 modules to the pipeline").
@@ -202,12 +213,13 @@ signposts cost ~nothing when no trace is recording and surface directly in Instr
 2. ✅ **`os_signpost` instrumentation layer + GPU command-buffer timing**; retired the
    `print`-based probes. Unblocks goal 4.
 
-### P1 — the modularity foundation (goal 1)  ⬜
+### P1 — the modularity foundation (goal 1)  🟡 In progress
 
-3. **Extract an `AudioRenderingEngine` protocol** and an **`AudioGraph` with insertable
-   `AudioEffectUnit`s**; make EQ the first unit. Enables pipeline modules *and* removes
-   the `testing_*` leakage from `AudioPlayer` (T1).
-4. **Decompose `AudioPlayer`** into Transport / Graph / Volume+ReplayGain /
+3. 🟡 **Insertable effect chain.** ✅ `AudioGraph` + `AudioEffectUnit` with EQ as the
+   first unit (`EQAudioEffect`), EQ policy unit-tested. ⬜ Still extract an
+   **`AudioRenderingEngine` protocol** (mockable engine seam) to remove the `testing_*`
+   leakage from `AudioPlayer` (T1).
+4. ⬜ **Decompose `AudioPlayer`** into Transport / Graph / Volume+ReplayGain /
    RemoteCommands / NowPlaying collaborators.
 
 ### P2 — visualization extensibility (goal 2)  ⬜
@@ -233,3 +245,4 @@ signposts cost ~nothing when no trace is recording and surface directly in Instr
 | Date | Change |
 |---|---|
 | 2026-06-16 | Initial whole-project architecture review. P0 implemented: CI test gating + `os_signpost`/GPU-timing instrumentation; `print` probes and `DiagnosticLog` retired. |
+| 2026-06-16 | P1 (foundation): introduced `AudioGraph` + `AudioEffectUnit`; extracted the EQ as `EQAudioEffect` (policy unit-tested); `AudioPlayer` now builds its pipeline from an ordered effect chain instead of hardcoded wiring. |
