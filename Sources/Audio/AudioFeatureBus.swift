@@ -77,7 +77,6 @@ final class AudioFeatureBus: @unchecked Sendable {
         batchDuration: Double,
         isPlaying: Bool
     ) {
-        Self.logFramesIn(frameCount: frames.count, batchDuration: batchDuration, isPlaying: isPlaying)
         let normalized = frames.isEmpty
             ? [Array(repeating: Float(0), count: AudioFeatures.spectrumBandCount)]
             : frames.map(Self.normalizedSpectrum)
@@ -87,26 +86,6 @@ final class AudioFeatureBus: @unchecked Sendable {
         self.spectrumBatchDuration = batchDuration
         self.isPlaying = isPlaying
         self.lock.unlock()
-    }
-
-    // TEMP-DIAGNOSTIC: timestamp each batch of FFT frames arriving from the audio
-    // tap — the true "new data" rate that feeds the bars, before playout pacing.
-    // Guarded to real audio buffers (batchDuration > 0) so the single-frame test
-    // path stays silent.
-    private nonisolated(unsafe) static var framesInLastTime = 0.0
-    private static let framesInLock = NSLock()
-    private static func logFramesIn(frameCount: Int, batchDuration: Double, isPlaying: Bool) {
-        guard batchDuration > 0 else { return }
-        Self.framesInLock.lock()
-        let now = CACurrentMediaTime()
-        let deltaMs = Self.framesInLastTime > 0 ? (now - Self.framesInLastTime) * 1000 : 0
-        Self.framesInLastTime = now
-        Self.framesInLock.unlock()
-        DiagnosticLog.log(String(
-            format: "[FRAMES-IN] %@ Δ=%.1fms frames=%d batch=%.1fms playing=%@",
-            DiagnosticLog.timestamp(), deltaMs, frameCount, batchDuration * 1000,
-            isPlaying ? "yes" : "no"
-        ))
     }
 
     /// Publishes a single spectrum frame (no intra-buffer detail). Convenience used

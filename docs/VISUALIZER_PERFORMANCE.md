@@ -14,27 +14,34 @@ clearly **< 10 Hz** — even though the player audio itself was fine.
 
 ## 2. How it was diagnosed
 
-Rather than guessing, temporary-but-retained diagnostics were added to measure each
-stage of the pipeline independently. They log through a single helper,
-`Sources/Utilities/DiagnosticLog.swift` (flushes stdout so logs survive redirection
-to a file), and can be silenced with `DiagnosticLog.isEnabled = false`.
+Rather than guessing, lightweight diagnostics measured each stage of the pipeline
+independently.
 
-| Probe | Where | Measures |
-|---|---|---|
-| `[TAP]` | `FFTSpectrumAnalyzer.installTap` | Audio tap callback cadence + buffer size |
-| `[FRAMES-IN]` | `AudioFeatureBus.publishSpectrumFrames` | Rate fresh FFT frames arrive |
-| `[BAR-UPDATE]` | `MetalVisualizationRenderer.draw` | Each time the bar data actually changes |
-| `[DRAW-DIAG]` | `MetalVisualizationRenderer.draw` | Real Metal draw/display rate |
-| `[EFF-DIAG]` | `MetalVisualizationRenderer.draw` | How many draws carry changed data |
+> **Update:** the original `print`-based probes (which logged through a
+> `DiagnosticLog` helper) have since been replaced by `os_signpost` instrumentation in
+> [`Sources/Utilities/Instrumentation.swift`](../Sources/Utilities/Instrumentation.swift).
+> The signposts below are general-purpose profiling hooks — they stay in the code and
+> cost ~nothing when no trace is recording. Profile them in **Instruments** (Time
+> Profiler + os_signpost templates), filtered by subsystem `com.winamp.macos`.
 
-**Run it:**
+| Signpost | Category | Where | Measures |
+|---|---|---|---|
+| `fftAnalyze` (interval) | `Audio` | `FFTSpectrumAnalyzer.enqueue` | Per-buffer FFT CPU cost + analysis cadence (subsumes the old `[TAP]`/`[FRAMES-IN]`) |
+| `frame` (interval) | `Visualization` | `MetalVisualizationRenderer.draw` | Per-frame CPU encode cost + draw rate (old `[DRAW-DIAG]`) |
+| `gpu` (event) | `Visualization` | command-buffer completion | GPU execution time per frame, in microseconds |
+
+The old `[EFF-DIAG]`/`[BAR-UPDATE]` probes were one-off validations of the hop-frame
+playout fix (Root cause B); that behavior is now locked down by
+`VisualizationPlayoutClockTests` instead.
+
+**Run it (Instruments CLI):**
 ```bash
 APP_BIN=$(find ~/Library/Developer/Xcode/DerivedData/Winamp-*/Build/Products/Debug/Winamp.app/Contents/MacOS/Winamp -maxdepth 0 | head -1)
-"$APP_BIN" >/tmp/winamp_diag.log 2>&1 &
-grep -E 'FRAMES-IN|BAR-UPDATE|DRAW-DIAG' /tmp/winamp_diag.log
+xctrace record --template 'Time Profiler' --launch "$APP_BIN" --output /tmp/winamp.trace
+open /tmp/winamp.trace   # inspect the os_signpost + Time Profiler tracks
 ```
-For CPU hot-spots, `sample $(pgrep -x Winamp) 2 -file /tmp/sample.txt` was used to read
-the main-thread call graph.
+The `frame`/`fftAnalyze` interval durations and the `gpu` event values quantify
+CPU and GPU cost; the Time Profiler track shows the main-thread call graph.
 
 ---
 
@@ -170,17 +177,17 @@ over the whole list 10×/sec.
 **New**
 - `Sources/Visualization/VisualizationPlayoutClock.swift` (+ tests)
 - `Sources/Views/Player/SongMarqueeAnimation.swift` (+ tests)
-- `Sources/Utilities/DiagnosticLog.swift`
+- `Sources/Utilities/Instrumentation.swift` (os_signpost profiling hooks)
 
 **Modified**
 - `Sources/Visualization/MetalVisualizationView.swift` — frame semaphore (A1),
-  present render pass (A2), `snapshot(at:)` playout, diagnostics
+  present render pass (A2), `snapshot(at:)` playout, `frame`/`gpu` signposts
 - `Sources/Visualization/MetalVisualizationPlugin.swift` — `FrameBufferRing` (A1),
   `copyPipeline` accessor
 - `Sources/Visualization/MetalVisualizationEngine.swift` — `copyPipeline` (A2)
 - `Sources/Shaders/VisualizerShaders.metal` — `copyFragment` (A2)
-- `Sources/Audio/AudioFeatureBus.swift` — store/pace hop frames, `[FRAMES-IN]`
-- `Sources/Audio/FFTSpectrumAnalyzer.swift` — publish all hop frames, `[TAP]`
+- `Sources/Audio/AudioFeatureBus.swift` — store/pace hop frames
+- `Sources/Audio/FFTSpectrumAnalyzer.swift` — publish all hop frames, `fftAnalyze` signpost
 - `Sources/AudioPlayer.swift` — wire `onSpectrumFrames`
 - `Sources/Views/Player/AnimatedSongDisplay.swift` — time-based marquee (C1)
 - `Sources/PlaylistView.swift` — isolate elapsed-time label (C2)

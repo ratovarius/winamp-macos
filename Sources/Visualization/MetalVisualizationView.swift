@@ -1,6 +1,7 @@
 import MetalKit
 import SwiftUI
 
+@MainActor
 final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
     private let featureBus: AudioFeatureBus
     private var plugin: MetalVisualizationPlugin
@@ -63,80 +64,15 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
 
     func mtkView(_: MTKView, drawableSizeWillChange _: CGSize) {}
 
-    // TEMP-DIAGNOSTIC: measure the real display/draw rate.
-    private nonisolated(unsafe) static var drawMeasureCount = 0
-    private nonisolated(unsafe) static var drawMeasureStart = CACurrentMediaTime()
-    private static func measureDrawRate() {
-        drawMeasureCount += 1
-        if drawMeasureCount % 120 == 0 {
-            let now = CACurrentMediaTime()
-            let elapsed = now - drawMeasureStart
-            let hz = Double(120) / max(elapsed, 0.000_1)
-            print(String(format: "[DRAW-DIAG] drawRate=%.1f Hz", hz))
-            fflush(stdout)
-            drawMeasureStart = now
-        }
-    }
-
-    // TEMP-DIAGNOSTIC: measure how often the *raw* spectrum target actually changes
-    // (the effective data rate reaching the renderer). Pre-fix this is ~10 Hz; the
-    // hop-frame playout should raise it toward the draw rate.
-    private nonisolated(unsafe) static var effPrevSum: Float = -1
-    private nonisolated(unsafe) static var effChangeCount = 0
-    private nonisolated(unsafe) static var effDrawCount = 0
-    private nonisolated(unsafe) static var effStart = CACurrentMediaTime()
-    private static func measureEffectiveSpectrumRate(_ spectrum: [Float]) {
-        let sum = spectrum.reduce(0, +)
-        if abs(sum - effPrevSum) > 0.000_1 { effChangeCount += 1 }
-        effPrevSum = sum
-        effDrawCount += 1
-        if effDrawCount % 120 == 0 {
-            let now = CACurrentMediaTime()
-            let elapsed = now - effStart
-            let changeHz = Double(effChangeCount) / max(elapsed, 0.000_1)
-            print(
-                String(
-                    format: "[EFF-DIAG] effectiveSpectrumChange=%.1f Hz (%d/%d draws changed)",
-                    changeHz, effChangeCount, effDrawCount))
-            fflush(stdout)
-            effChangeCount = 0
-            effDrawCount = 0
-            effStart = now
-        }
-    }
-
-    // TEMP-DIAGNOSTIC: timestamp each time the FFT bar data (the raw spectrum target
-    // that drives bar heights) actually changes, with the gap since the previous
-    // change and the largest per-band delta. Many tiny changes vs a few large steps
-    // is the difference between a smooth sweep and a steppy "<10 Hz" look.
-    private nonisolated(unsafe) static var barPrevSpectrum: [Float] = []
-    private nonisolated(unsafe) static var barLastUpdateTime = 0.0
-    private static func logBarUpdate(_ spectrum: [Float], now: Double) {
-        guard Self.barPrevSpectrum.count == spectrum.count else {
-            // First frame (or band-count change): seed the baseline, don't log a bogus delta.
-            Self.barPrevSpectrum = spectrum
-            return
-        }
-        var maxBandDelta: Float = 0
-        for index in spectrum.indices {
-            maxBandDelta = max(maxBandDelta, abs(spectrum[index] - Self.barPrevSpectrum[index]))
-        }
-        Self.barPrevSpectrum = spectrum
-        guard maxBandDelta > 0.0001 else { return }
-        let deltaMs = Self.barLastUpdateTime > 0 ? (now - Self.barLastUpdateTime) * 1000 : 0
-        Self.barLastUpdateTime = now
-        DiagnosticLog.log(String(
-            format: "[BAR-UPDATE] %@ Δ=%.1fms maxBandΔ=%.3f",
-            DiagnosticLog.timestamp(), deltaMs, maxBandDelta
-        ))
-    }
-
     func draw(in view: MTKView) {
         // Triple-buffer back-pressure: block until the GPU finishes a frame so we never overwrite
         // a buffer the GPU is still reading. The matching signal fires in the completion handler.
         self.inFlightSemaphore.wait()
 
-        Self.measureDrawRate()
+        // Per-frame CPU encoding cost: visible in Instruments' os_signpost track. Started
+        // after the back-pressure wait so the interval reflects encoding work, not GPU stalls.
+        let frameSignpost = Instrumentation.visualization.beginInterval("frame")
+        defer { Instrumentation.visualization.endInterval("frame", frameSignpost) }
 
         guard let commandBuffer = pipelineProvider.commandQueue.makeCommandBuffer() else {
             self.inFlightSemaphore.signal()
@@ -144,8 +80,12 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
         }
 
         let semaphore = self.inFlightSemaphore
-        commandBuffer.addCompletedHandler { _ in
+        commandBuffer.addCompletedHandler { buffer in
             semaphore.signal()
+            // GPU execution time for this frame, emitted as a signpost event so it can be
+            // graphed in Instruments alongside the CPU "frame" interval.
+            let gpuMicroseconds = Int((buffer.gpuEndTime - buffer.gpuStartTime) * 1_000_000)
+            Instrumentation.visualization.emitEvent("gpu", "gpu_us=\(gpuMicroseconds)")
         }
 
         guard let drawable = view.currentDrawable else {
@@ -168,8 +108,6 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
         }
 
         let raw = self.featureBus.snapshot(at: now, waveformSampleCount: waveformSampleCount)
-        Self.measureEffectiveSpectrumRate(raw.spectrum)
-        Self.logBarUpdate(raw.spectrum, now: now)
         let smoothedSpectrum = self.featureSmoother.update(
             targets: raw.spectrum,
             isPlaying: raw.isPlaying,
@@ -362,6 +300,7 @@ final class MetalVisualizationRenderer: NSObject, MTKViewDelegate {
     }
 }
 
+@MainActor
 private enum MetalVisualizationViewFactory {
     static func configure(_ view: MTKView, device: MTLDevice, delegate: MTKViewDelegate) {
         view.device = device

@@ -66,27 +66,7 @@ final class FFTSpectrumAnalyzer: @unchecked Sendable {
         guard format.sampleRate > 0 else { return }
 
         node.installTap(onBus: 0, bufferSize: AVAudioFrameCount(self.hopSize), format: format) { [weak self] buffer, _ in
-            Self.measureTapRate(frameLength: Int(buffer.frameLength), sampleRate: format.sampleRate)
             self?.enqueue(buffer: buffer)
-        }
-    }
-
-    // TEMP-DIAGNOSTIC: measure the real tap buffer size + callback rate.
-    private nonisolated(unsafe) static var tapMeasureCount = 0
-    private nonisolated(unsafe) static var tapMeasureStart = CFAbsoluteTimeGetCurrent()
-    private static let tapMeasureLock = NSLock()
-    private static func measureTapRate(frameLength: Int, sampleRate: Double) {
-        tapMeasureLock.lock()
-        defer { tapMeasureLock.unlock() }
-        tapMeasureCount += 1
-        if tapMeasureCount % 30 == 0 {
-            let now = CFAbsoluteTimeGetCurrent()
-            let elapsed = now - tapMeasureStart
-            let hz = Double(30) / max(elapsed, 0.000_1)
-            print(String(format: "[TAP-DIAG] frameLength=%d sampleRate=%.0f → callbackRate=%.1f Hz (buffer spans %.1f ms)",
-                         frameLength, sampleRate, hz, Double(frameLength) / sampleRate * 1000))
-            fflush(stdout)
-            tapMeasureStart = now
         }
     }
 
@@ -98,6 +78,10 @@ final class FFTSpectrumAnalyzer: @unchecked Sendable {
         guard let copy = copyBuffer(buffer) else { return }
         self.processingQueue.async { [weak self] in
             guard let self else { return }
+            // Per-buffer FFT analysis cost + cadence: visible in Instruments' os_signpost
+            // track under the "Audio" category.
+            let analysisSignpost = Instrumentation.audio.beginInterval("fftAnalyze")
+            defer { Instrumentation.audio.endInterval("fftAnalyze", analysisSignpost) }
             AudioFeatureBus.shared.waveformRing.append(pcm: copy)
             let waveform = self.extractWaveformSamples(from: copy, sampleCount: self.waveformChunkSize)
             var frames: [[Float]] = []
