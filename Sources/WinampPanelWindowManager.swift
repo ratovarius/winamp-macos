@@ -16,22 +16,54 @@ final class WinampPanelWindowManager {
         let startOrigin: NSPoint
     }
 
-    private var windows: [WinampPanelKind: NSWindow] = [:]
-    private var hostingControllers: [WinampPanelKind: NSHostingController<AnyView>] = [:]
+    private var windows: [WinampPanelID: NSWindow] = [:]
+    private var hostingControllers: [WinampPanelID: NSHostingController<AnyView>] = [:]
     private weak var mainWindow: NSWindow?
     private var layoutState: WinampPanelLayoutState?
     private var audioPlayer: AudioPlayer?
     private var playlistManager: PlaylistManager?
     private var uiScale: WinampUIScale?
 
-    private var dockedBelow: [WinampPanelKind: ObjectIdentifier] = [:]
-    private var isFloating: [WinampPanelKind: Bool] = [
-        .equalizer: false,
-        .playlist: false,
-    ]
+    private var dockedBelow: [WinampPanelID: ObjectIdentifier] = [:]
+    private var isFloating: [WinampPanelID: Bool] = [:]
     private var moveObservers: [NSObjectProtocol] = []
     private var dragEventMonitor: Any?
     private var activeDrag: ActiveDrag?
+
+    /// The set of panels the manager can host, in default top→bottom stack order. Built once;
+    /// each descriptor reads live layout state through `self`, so a new panel is added by appending
+    /// a descriptor here rather than editing per-kind branches throughout the manager.
+    private lazy var registry: [WinampPanelDescriptor] = self.makeRegistry()
+
+    private var panelIDs: [WinampPanelID] { self.registry.map(\.id) }
+
+    private func descriptor(for id: WinampPanelID) -> WinampPanelDescriptor? {
+        self.registry.first { $0.id == id }
+    }
+
+    private func makeRegistry() -> [WinampPanelDescriptor] {
+        [
+            WinampPanelDescriptor(
+                id: .equalizer,
+                isVisible: { [weak self] in self?.layoutState?.isEqualizerDocked ?? false },
+                makeRoot: { AnyView(EqualizerView().winampOuterFrame()) },
+                sizing: .fixedToContent
+            ),
+            WinampPanelDescriptor(
+                id: .playlist,
+                isVisible: { [weak self] in self?.layoutState?.showPlaylist ?? false },
+                makeRoot: { [weak self] in
+                    guard let layoutState = self?.layoutState else { return AnyView(EmptyView()) }
+                    return AnyView(PlaylistPanelRoot(layoutState: layoutState))
+                },
+                sizing: .explicit { [weak self] in
+                    guard let layoutState = self?.layoutState else { return .zero }
+                    let height = layoutState.playlistMinimized ? 50 : layoutState.playlistSize.height
+                    return CGSize(width: layoutState.playlistSize.width, height: height)
+                }
+            ),
+        ]
+    }
 
     private init() {}
 
@@ -80,15 +112,10 @@ final class WinampPanelWindowManager {
     }
 
     func syncPanels() {
-        guard let layoutState else { return }
+        guard self.layoutState != nil else { return }
 
-        let showEQ = layoutState.isEqualizerDocked
-        self.setPanelVisible(showEQ, kind: .equalizer) {
-            self.makeEqualizerRoot()
-        }
-
-        self.setPanelVisible(layoutState.showPlaylist, kind: .playlist) {
-            self.makePlaylistRoot()
+        for descriptor in self.registry {
+            self.setPanelVisible(descriptor.isVisible(), descriptor: descriptor)
         }
 
         self.reanchorDockedPlaylist()
@@ -97,8 +124,9 @@ final class WinampPanelWindowManager {
 
     /// Resize the playlist panel to match `layoutState` without rebuilding its SwiftUI tree.
     func resizePlaylistPanel() {
-        guard self.windows[.playlist]?.isVisible == true else { return }
-        self.applyPlaylistContentSize()
+        guard self.windows[.playlist]?.isVisible == true,
+              let descriptor = self.descriptor(for: .playlist) else { return }
+        self.applyContentSize(for: descriptor)
         if !self.isFloating[.playlist, default: false] {
             self.repositionDockedPlaylist()
         }
@@ -156,11 +184,11 @@ final class WinampPanelWindowManager {
     /// Floating or hidden panels are detached. Only changed links are touched, so it is cheap to
     /// call after any layout pass.
     private func syncChildWindowLinks() {
-        for kind in WinampPanelKind.allCases {
-            guard let panel = self.windows[kind] else { continue }
+        for id in self.panelIDs {
+            guard let panel = self.windows[id] else { continue }
 
-            let desiredParent: NSWindow? = panel.isVisible && !self.isFloating[kind, default: false]
-                ? self.dockAnchorWindow(for: kind)
+            let desiredParent: NSWindow? = panel.isVisible && !self.isFloating[id, default: false]
+                ? self.dockAnchorWindow(for: id)
                 : nil
 
             guard panel.parent !== desiredParent else { continue }
@@ -228,29 +256,26 @@ final class WinampPanelWindowManager {
         )
     }
 
-    private func setPanelVisible(
-        _ visible: Bool,
-        kind: WinampPanelKind,
-        @ViewBuilder content: () -> some View
-    ) {
+    private func setPanelVisible(_ visible: Bool, descriptor: WinampPanelDescriptor) {
         if visible {
-            self.showPanel(kind: kind, rootView: AnyView(content()))
+            self.showPanel(descriptor: descriptor)
         } else {
-            self.hidePanel(kind: kind)
+            self.hidePanel(id: descriptor.id)
         }
     }
 
-    private func showPanel(kind: WinampPanelKind, rootView: AnyView) {
+    private func showPanel(descriptor: WinampPanelDescriptor) {
         guard let audioPlayer, let playlistManager, let uiScale else { return }
 
+        let id = descriptor.id
         let window: NSWindow
 
-        if let existing = self.windows[kind], self.hostingControllers[kind] != nil {
+        if let existing = self.windows[id], self.hostingControllers[id] != nil {
             window = existing
             // Keep the live view tree — bindings on `layoutState` propagate size changes.
         } else {
             let decoratedView = AnyView(
-                rootView
+                descriptor.makeRoot()
                     .environmentObject(audioPlayer)
                     .environmentObject(audioPlayer.playbackClock)
                     .environmentObject(playlistManager)
@@ -270,18 +295,18 @@ final class WinampPanelWindowManager {
             window.isReleasedWhenClosed = false
             WinampWindowConfigurator.apply(to: window, resizable: false)
 
-            self.windows[kind] = window
-            self.hostingControllers[kind] = hosting
-            self.isFloating[kind] = false
-            self.setDefaultDockParent(for: kind)
+            self.windows[id] = window
+            self.hostingControllers[id] = hosting
+            self.isFloating[id] = false
+            self.setDefaultDockParent(for: id)
         }
 
-        self.sizePanelWindow(kind: kind)
+        self.applyContentSize(for: descriptor)
         window.orderFront(nil)
     }
 
-    private func hidePanel(kind: WinampPanelKind) {
-        guard let window = self.windows[kind] else { return }
+    private func hidePanel(id: WinampPanelID) {
+        guard let window = self.windows[id] else { return }
         // Detach first: ordering out a window also hides its child windows, which would wrongly hide
         // a panel docked below this one. Re-anchoring + `syncChildWindowLinks` then re-attaches any
         // orphaned sub-tree to a still-visible anchor.
@@ -292,32 +317,24 @@ final class WinampPanelWindowManager {
         window.orderOut(nil)
     }
 
-    private func sizePanelWindow(kind: WinampPanelKind) {
-        switch kind {
-        case .playlist:
-            self.applyPlaylistContentSize()
-        case .equalizer:
-            self.applyEqualizerContentSize()
+    private func applyContentSize(for descriptor: WinampPanelDescriptor) {
+        guard let window = self.windows[descriptor.id] else { return }
+
+        let panelWidth = self.uiScale?.panelWidth ?? WinampMetrics.panelWidth
+        let size: NSSize
+
+        switch descriptor.sizing {
+        case .fixedToContent:
+            guard let hosting = self.hostingControllers[descriptor.id] else { return }
+            hosting.view.layoutSubtreeIfNeeded()
+            let fitting = hosting.sizeThatFits(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
+            size = NSSize(width: panelWidth, height: max(fitting.height, 50))
+        case let .explicit(provider):
+            let desired = provider()
+            size = NSSize(width: max(desired.width, panelWidth), height: desired.height)
         }
-    }
 
-    private func applyPlaylistContentSize() {
-        guard let window = self.windows[.playlist], let layoutState else { return }
-
-        let minWidth = self.uiScale?.panelWidth ?? WinampMetrics.panelWidth
-        let width = max(layoutState.playlistSize.width, minWidth)
-        let height = layoutState.playlistMinimized ? 50 : layoutState.playlistSize.height
-        self.setContentSizeWithoutAnimation(window, size: NSSize(width: width, height: height))
-    }
-
-    private func applyEqualizerContentSize() {
-        guard let window = self.windows[.equalizer], let hosting = self.hostingControllers[.equalizer] else { return }
-
-        hosting.view.layoutSubtreeIfNeeded()
-        let fittingSize = hosting.sizeThatFits(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
-        let width = self.uiScale?.panelWidth ?? WinampMetrics.panelWidth
-        let height = max(fittingSize.height, 50)
-        self.setContentSizeWithoutAnimation(window, size: NSSize(width: width, height: height))
+        self.setContentSizeWithoutAnimation(window, size: size)
     }
 
     private func setContentSizeWithoutAnimation(_ window: NSWindow, size: NSSize) {
@@ -334,28 +351,16 @@ final class WinampPanelWindowManager {
         }
     }
 
-    private func makeEqualizerRoot() -> some View {
-        EqualizerView()
-            .winampOuterFrame()
-    }
-
-    @ViewBuilder
-    private func makePlaylistRoot() -> some View {
-        if let layoutState {
-            PlaylistPanelRoot(layoutState: layoutState)
-        }
-    }
-
-    private func setDefaultDockParent(for kind: WinampPanelKind) {
-        switch kind {
-        case .equalizer:
-            if let mainWindow {
-                self.dockedBelow[kind] = ObjectIdentifier(mainWindow)
-            }
-        case .playlist:
+    private func setDefaultDockParent(for id: WinampPanelID) {
+        // Docking anchors are still resolved per panel here; generalizing this into the ordered
+        // stack model is M2. The EQ docks under the main window; the playlist under whichever
+        // window the docking rule selects.
+        if id == .playlist {
             if let anchor = self.defaultPlaylistAnchor() {
-                self.dockedBelow[kind] = ObjectIdentifier(anchor)
+                self.dockedBelow[id] = ObjectIdentifier(anchor)
             }
+        } else if let mainWindow {
+            self.dockedBelow[id] = ObjectIdentifier(mainWindow)
         }
     }
 
@@ -391,8 +396,8 @@ final class WinampPanelWindowManager {
         self.dockedBelow[.playlist] = ObjectIdentifier(anchor)
     }
 
-    private func dockAnchorWindow(for kind: WinampPanelKind) -> NSWindow? {
-        guard let dockID = self.dockedBelow[kind] else { return self.mainWindow }
+    private func dockAnchorWindow(for id: WinampPanelID) -> NSWindow? {
+        guard let dockID = self.dockedBelow[id] else { return self.mainWindow }
         if let mainWindow, ObjectIdentifier(mainWindow) == dockID { return mainWindow }
         for (_, window) in self.windows where ObjectIdentifier(window) == dockID {
             return window
@@ -405,18 +410,18 @@ final class WinampPanelWindowManager {
         if let mainWindow, mainWindow.isVisible {
             result.append(mainWindow)
         }
-        for kind in WinampPanelKind.allCases {
-            if let window = self.windows[kind], window.isVisible {
+        for id in self.panelIDs {
+            if let window = self.windows[id], window.isVisible {
                 result.append(window)
             }
         }
         return result
     }
 
-    private func positionPanel(_ kind: WinampPanelKind, below anchor: NSWindow, resize: Bool = true) {
-        guard let window = self.windows[kind] else { return }
-        if resize {
-            self.sizePanelWindow(kind: kind)
+    private func positionPanel(_ id: WinampPanelID, below anchor: NSWindow, resize: Bool = true) {
+        guard let window = self.windows[id] else { return }
+        if resize, let descriptor = self.descriptor(for: id) {
+            self.applyContentSize(for: descriptor)
         }
 
         let anchorFrame = anchor.frame
@@ -453,14 +458,14 @@ final class WinampPanelWindowManager {
         // A panel is docked to whatever window directly abuts it from above — which may itself be a
         // floating panel. This keeps a detached EQ+playlist sub-tree linked (and moving together)
         // instead of only recognizing windows still connected to the main player.
-        for kind in WinampPanelKind.allCases {
-            guard let panel = self.windows[kind], panel.isVisible else { continue }
+        for id in self.panelIDs {
+            guard let panel = self.windows[id], panel.isVisible else { continue }
 
             if let anchor = self.anchorAbove(panel, in: visible) {
-                self.isFloating[kind] = false
-                self.dockedBelow[kind] = ObjectIdentifier(anchor)
+                self.isFloating[id] = false
+                self.dockedBelow[id] = ObjectIdentifier(anchor)
             } else {
-                self.isFloating[kind] = true
+                self.isFloating[id] = true
             }
         }
     }
@@ -480,8 +485,8 @@ final class WinampPanelWindowManager {
         guard window === self.mainWindow else { return }
         // Detach before hiding so AppKit's automatic child-window restore on deminiaturize doesn't
         // race our own `syncPanels`; visibility is re-established explicitly there.
-        for kind in WinampPanelKind.allCases {
-            guard let panel = self.windows[kind] else { continue }
+        for id in self.panelIDs {
+            guard let panel = self.windows[id] else { continue }
             panel.parent?.removeChildWindow(panel)
             panel.orderOut(nil)
         }
@@ -495,16 +500,16 @@ final class WinampPanelWindowManager {
     private func applySnapIfNeeded() {
         guard let mainWindow else { return }
 
-        for kind in WinampPanelKind.allCases {
-            guard let panel = self.windows[kind], panel.isVisible, self.isFloating[kind, default: false] else {
+        for id in self.panelIDs {
+            guard let panel = self.windows[id], panel.isVisible, self.isFloating[id, default: false] else {
                 continue
             }
 
             for anchor in self.visibleManagedWindows() where anchor !== panel {
                 if let snapped = WinampWindowSnap.snappedOrigin(for: panel, against: anchor) {
                     self.setFrameOriginWithoutAnimation(panel, origin: snapped)
-                    self.isFloating[kind] = false
-                    self.dockedBelow[kind] = ObjectIdentifier(anchor)
+                    self.isFloating[id] = false
+                    self.dockedBelow[id] = ObjectIdentifier(anchor)
                     break
                 }
             }

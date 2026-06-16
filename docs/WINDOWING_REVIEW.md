@@ -21,7 +21,10 @@ the main window by ~1 frame. None are crashers; all are visual/UX correctness or
 
 > **Update:** W1–W4 and W6 are now fixed. W1/W6 were resolved together by adopting native
 > parent-child windows (`addChildWindow`) — see W1 below. W5 (arbitrary EQ docking) remains, and is
-> best finished alongside the M2 ordered stack model.
+> best finished alongside the M2 ordered stack model. **M1 + M4 have also landed**: the closed
+> `WinampPanelKind` enum is replaced by an open `WinampPanelID` + a `WinampPanelDescriptor` registry
+> (visibility / view-building / sizing-as-data), so the manager is panel-agnostic for registration,
+> rendering, and sizing. Docking *order* is still resolved per panel — that is the remaining M2 work.
 
 The recurring root cause behind the drag-lag and the docking gaps is the same: the manager does
 **manual per-window frame bookkeeping** instead of using native window grouping
@@ -41,10 +44,10 @@ _Severity `Arch` = architectural/design-level (enables the modular goal), not a 
 
 | # | Finding | Severity | Status |
 |---|---|---|---|
-| M1 | Closed `WinampPanelKind` enum + per-kind switches block new panels | Arch | ⬜ |
+| M1 | Closed `WinampPanelKind` enum + per-kind switches block new panels | Arch | ✅ |
 | M2 | No explicit, ordered, persisted stack model (order is hardcoded) | Arch | ⬜ |
 | M3 | No user reordering of the stack | Arch | ⬜ |
-| M4 | Per-kind sizing/anchor logic should be descriptor data (strategy) | Arch | ⬜ |
+| M4 | Per-kind sizing/anchor logic should be descriptor data (strategy) | Arch | 🟡 |
 | W1 | Stack drag lag — panels trail main by ~1 frame (regression) | Important | ✅ |
 | W2 | Toggling EQ off leaves a gap; tested anchor fn is bypassed | Important | ✅ |
 | W3 | Panel title double-click miniaturizes to Dock, not windowshade | Important | ✅ |
@@ -71,6 +74,7 @@ Three distinct windowing mechanisms coexist:
 | Layer | File | Responsibility |
 |---|---|---|
 | Orchestration | `Sources/WinampPanelWindowManager.swift` | AppKit window lifecycle, drag loop, dock state |
+| Panel registry (data) | `Sources/WinampPanelDescriptor.swift` | `WinampPanelID` (open set) + `WinampPanelDescriptor` + `PanelSizingPolicy` |
 | Snap geometry (pure) | `Sources/Utilities/WinampWindowSnap.swift` | `abuts` / `traceConnected` / `snappedOrigin` — Webamp port |
 | Dock decision (pure) | `Sources/Utilities/WinampPanelDocking.swift` | playlist anchor = main vs. equalizer |
 | Window chrome | `Sources/Utilities/WinampWindowConfigurator.swift` | borderless style mask, hidden traffic lights |
@@ -156,10 +160,23 @@ full 2D side-docking (a branching tree across left/right edges) is a larger grap
 registry + descriptor approach still holds, but keep the ordered model 1-D until side-docking is an
 actual goal.
 
-### M1 — Closed `WinampPanelKind` enum + per-kind switches  ⬜
-The enum (`.equalizer`, `.playlist`) plus the ~6 `switch`/per-kind methods listed above hard-bind
-the system to exactly two panels. Replace with the **registry of `WinampPanelDescriptor`** (target
-design §1). New panels register; the manager becomes panel-agnostic.
+### M1 — Closed `WinampPanelKind` enum + per-kind switches  ✅
+The enum (`.equalizer`, `.playlist`) plus the ~6 `switch`/per-kind methods hard-bound the system to
+exactly two panels.
+
+**Fixed:** new `Sources/WinampPanelDescriptor.swift` introduces `WinampPanelID` (a `String`-backed
+struct — an *open* set; new panels declare their own constant without editing a central enum) and
+`WinampPanelDescriptor` (`id` + `isVisible` + `makeRoot` + `sizing`). The manager holds a `registry:
+[WinampPanelDescriptor]` (built once, closures read live `layoutState` through `self`) and iterates
+it: `syncPanels` loops descriptors and shows/hides by `descriptor.isVisible()`; `showPanel` builds
+the hosting controller from `descriptor.makeRoot()`; every `WinampPanelKind.allCases` loop is now
+`for id in panelIDs`, and the dictionaries re-key to `WinampPanelID`. The bespoke `makeEqualizerRoot`
+/ `makePlaylistRoot` methods are gone. `WinampPanelKind.swift` is deleted. Adding a panel
+(e.g. the visualizer, W8) is now “append a descriptor.”
+
+*Scope:* docking *order/anchoring* (`stackDockedPanels`, `defaultPlaylistAnchor`, `setDefaultDockParent`)
+still references `.equalizer` / `.playlist` explicitly — generalizing that into an ordered model is
+M2. Verified: full suite `TEST SUCCEEDED`; rendered look unchanged (descriptors carry no chrome).
 
 ### M2 — No explicit, ordered, persisted stack model  ⬜
 Dock order is implicit (hardcoded in `stackDockedPanels` / `defaultPlaylistAnchor`) and the only
@@ -172,11 +189,15 @@ Nothing lets a user put, say, the playlist above the EQ and keep it. Once M2 exi
 just `stackModel.move(...)` driven by drag-snap and/or an explicit control, then a child-window
 chain rebuild (§4). Persisted, so preferences survive restart.
 
-### M4 — Per-kind sizing/anchor logic should be descriptor data  ⬜
-`sizePanelWindow`, `applyPlaylistContentSize`/`applyEqualizerContentSize`, and the fixed-vs-resizable
-distinction are encoded as control flow. Move them into `PanelSizingPolicy` on the descriptor
-(Strategy, §1) — this also encodes W4 (main/EQ `fixedToContent`) and W7 (playlist `resizable`)
-declaratively instead of via special cases.
+### M4 — Per-kind sizing/anchor logic should be descriptor data  🟡
+The **sizing** half is done. `sizePanelWindow` / `applyPlaylistContentSize` /
+`applyEqualizerContentSize` (a per-kind `switch`) collapsed into one `applyContentSize(for:)` driven
+by `descriptor.sizing` (`PanelSizingPolicy`): `.fixedToContent` (EQ — intrinsic fitting height) and
+`.explicit(() -> CGSize)` (playlist — user-resizable size from `layoutState`, width clamped to the
+panel width). This encodes W4 (main/EQ fixed) and W7 (playlist resizable) declaratively.
+
+*Remaining:* the **anchor** half (`defaultPlaylistAnchor`, the EQ/playlist docking special-cases) is
+still control flow, deferred to M2 where the ordered stack model resolves anchoring generically.
 
 ---
 
@@ -361,10 +382,10 @@ with XCTest.
    are child windows; the stack moves atomically and a dragged panel carries its sub-tree.
 
 **Phase 1 — modular core (unlocks the stated goal):**
-5. **M1** — `WinampPanelDescriptor` + registry; retire the `WinampPanelKind` switches.
+5. **M1** ✅ — `WinampPanelDescriptor` + registry; the `WinampPanelKind` switches are retired.
 6. **M2** — `WinampPanelStackModel` (ordered, `Codable`-persisted) as the single source of truth;
    `dockedBelow` becomes a cache. Generic `stackDockedPanels` loop. *Resolves W2 + W5 properly.*
-7. **M4** — fold sizing into `PanelSizingPolicy` (encodes W4/W7 declaratively).
+7. **M4** 🟡 — sizing folded into `PanelSizingPolicy` (done); anchor logic still pending (with M2).
 8. **M3** — drag-snap and an explicit control both write `stackModel.move(...)`; persist.
 
 **Phase 2 — native grouping & fidelity:**
