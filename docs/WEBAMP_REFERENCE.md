@@ -294,9 +294,49 @@ by value/effort. Source paths are in the Webamp repo.
 
 ### Not relevant to a native app
 
-Webamp's Redux store/reducers/action-creators (`store.ts`, `reducers/`, `actionCreators/`) and the
-butterchurn Milkdrop-preset engine are web-architecture specifics; the SwiftUI/AVFoundation/Metal
-stack already covers these concerns idiomatically.
+Webamp's Redux store/reducers/action-creators (`store.ts`, `reducers/`, `actionCreators/`) are
+web-architecture specifics; the SwiftUI/AVFoundation/Metal stack already covers these concerns
+idiomatically. (Butterchurn's Milkdrop engine is the one exception — its *preset format* is worth
+mining; see "Sister projects" below.)
+
+---
+
+## Sister projects linked from the Webamp repo (reviewed)
+
+The Webamp monorepo publishes several standalone packages and credits external projects. Reviewed
+each for relevance to this native macOS fork. Most are dead ends; one is a clear follow-up.
+
+### Recommended follow-up: Butterchurn `.milk` preset format — *for the Metal visualizer*
+
+- **What:** [Butterchurn](https://github.com/jberg/butterchurn) (MIT) is a WebGL reimplementation of
+  Milkdrop 2, integrated into Webamp. It ships `butterchurn-presets` — the community `.milk` preset
+  corpus parsed into structured form — plus `milkdrop-preset-converter` and `milkdrop-eel` (the
+  expression evaluator).
+- **Why it fits:** this fork is on `feature/metal-visualization` with a native Metal engine
+  (`Sources/Views/Visualizer/MilkdropVisualizerView.swift`, `VisualizationPreset.swift`,
+  `Sources/Shaders/VisualizerShaders.metal`) and hand-authored presets. Butterchurn is the reference
+  for loading *real* `.milk` presets instead of bespoke shaders.
+- **Two things to mine (format/math only — no code dependency):**
+  1. **The `.milk` format + equation model** — INI-style files with `per_frame_N=` / `per_pixel_N=`
+     expression strings, evaluated each frame. `milkdrop-eel` shows how those are tokenized and run;
+     that's the spec to implement if `VisualizationPreset` should load `.milk` files.
+  2. **The audio → warp-mesh mapping** — how waveform/spectrum drive the per-vertex warp. Useful
+     reference even keeping our own Metal pipeline.
+- **Tension / scope:** large effort (an expression VM + mesh warp), and a roadmap decision rather
+  than polish — like `.wsz` skin loading. License is MIT, same as Webamp, so porting the math is safe.
+- **Value/effort:** High / High.
+
+### Not worth borrowing
+
+- **`winamp-eqf`** — already implemented as `Sources/Audio/EQFParser.swift`; its dB normalization
+  matches ours, confirming we're aligned with the reference. Nothing left to take.
+- **`ani-cursor`** — renders animated `.ani` skin cursors as CSS. Only relevant alongside `.wsz`
+  skin loading (already a deferred idea); low payoff on macOS.
+- **`skin-database`** — server + Twitter/Discord bots for skins.webamp.org. Only the `.wsz` parsing
+  overlaps, already captured above.
+- **`webamp-modern`** — prototype for XML-based "modern" Winamp skins. Out of scope; this fork is
+  deliberately classic 2.x.
+- **WACUP** (getwacup.com) — closed-source Windows plugin pack; ideas only, no code to borrow.
 
 ---
 
