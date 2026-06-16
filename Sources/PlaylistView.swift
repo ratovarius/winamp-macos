@@ -19,25 +19,44 @@ struct PlaylistView: View {
     @Binding var isMinimized: Bool
     @State private var isDragging = false
 
-    /// Filter tracks based on search text
-    var filteredTracks: [(index: Int, track: Track)] {
-        if self.searchText.isEmpty {
-            return Array(self.playlistManager.tracks.enumerated().map { ($0.offset, $0.element) })
+    // Memoized derived views of the playlist. Recomputed only when the track list or
+    // search text changes (see `recomputeDerivedTracks`), so unrelated re-renders
+    // (selection, hover, drag, playback position) don't pay the O(n log n) grouping cost.
+    @State private var filteredTracks: [(index: Int, track: Track)] = []
+    @State private var groupedTracks: [(artist: String, tracks: [(index: Int, track: Track)])] = []
+
+    /// Filter tracks by a title/artist substring match. Pure to keep the memoization
+    /// logic independent of view state.
+    private static func filterTracks(
+        _ tracks: [Track],
+        searchText: String
+    ) -> [(index: Int, track: Track)] {
+        if searchText.isEmpty {
+            return Array(tracks.enumerated().map { ($0.offset, $0.element) })
         }
 
-        let lowercasedSearch = self.searchText.lowercased()
-        return self.playlistManager.tracks.enumerated().compactMap { index, track in
+        let lowercasedSearch = searchText.lowercased()
+        return tracks.enumerated().compactMap { index, track in
             let matchesTitle = track.title.lowercased().contains(lowercasedSearch)
             let matchesArtist = track.artist.lowercased().contains(lowercasedSearch)
             return (matchesTitle || matchesArtist) ? (index, track) : nil
         }
     }
 
-    /// Group tracks by artist
-    var groupedTracks: [(artist: String, tracks: [(index: Int, track: Track)])] {
-        Dictionary(grouping: self.filteredTracks, by: { $0.track.artist })
+    /// Group filtered tracks by artist, preserving playlist order within each group.
+    private static func groupTracks(
+        _ filtered: [(index: Int, track: Track)]
+    ) -> [(artist: String, tracks: [(index: Int, track: Track)])] {
+        Dictionary(grouping: filtered, by: { $0.track.artist })
             .sorted { $0.key < $1.key }
             .map { (artist: $0.key, tracks: $0.value.sorted { $0.index < $1.index }) }
+    }
+
+    /// Refresh the memoized caches from the current track list and search text.
+    private func recomputeDerivedTracks() {
+        let filtered = Self.filterTracks(self.playlistManager.tracks, searchText: self.searchText)
+        self.filteredTracks = filtered
+        self.groupedTracks = Self.groupTracks(filtered)
     }
 
     var body: some View {
@@ -236,6 +255,9 @@ struct PlaylistView: View {
         }
         .background(WinampColors.mainBgDark)
         .frame(width: self.playlistSize.width, height: self.isMinimized ? 50 : self.playlistSize.height)
+        .onAppear { self.recomputeDerivedTracks() }
+        .onChange(of: self.searchText) { _ in self.recomputeDerivedTracks() }
+        .onChange(of: self.playlistManager.tracks) { _ in self.recomputeDerivedTracks() }
     }
 
     var totalDuration: TimeInterval {
