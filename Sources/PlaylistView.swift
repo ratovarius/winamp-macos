@@ -8,22 +8,20 @@ struct PlaylistView: View {
     @State private var tapTimer: Timer?
     @State private var lastTappedTrack: Track.ID?
     @State private var lastTrackCount = 0
-    @State private var expandedArtists: Set<String> = []
-    @AppStorage("playlistShowGrouped") private var showGrouped = false
     @State private var userInitiatedPlayback = false // Track if user clicked to play a song
     @State private var searchText = "" // Search filter text
     @State private var draggedTrackIndex: Int?
+    @State private var keyboardNavigation = PlaylistKeyboardNavigation()
 
     // Resizing state
     @Binding var playlistSize: CGSize
     @Binding var isMinimized: Bool
     @State private var isDragging = false
 
-    // Memoized derived views of the playlist. Recomputed only when the track list or
-    // search text changes (see `recomputeDerivedTracks`), so unrelated re-renders
-    // (selection, hover, drag, playback position) don't pay the O(n log n) grouping cost.
+    // Memoized filtered playlist. Recomputed only when the track list or search text
+    // changes (see `recomputeDerivedTracks`), so unrelated re-renders (selection, hover,
+    // drag, playback position) don't re-filter on every tick.
     @State private var filteredTracks: [(index: Int, track: Track)] = []
-    @State private var groupedTracks: [(artist: String, tracks: [(index: Int, track: Track)])] = []
 
     /// Filter tracks by a title/artist substring match. Pure to keep the memoization
     /// logic independent of view state.
@@ -43,20 +41,9 @@ struct PlaylistView: View {
         }
     }
 
-    /// Group filtered tracks by artist, preserving playlist order within each group.
-    private static func groupTracks(
-        _ filtered: [(index: Int, track: Track)]
-    ) -> [(artist: String, tracks: [(index: Int, track: Track)])] {
-        Dictionary(grouping: filtered, by: { $0.track.artist })
-            .sorted { $0.key < $1.key }
-            .map { (artist: $0.key, tracks: $0.value.sorted { $0.index < $1.index }) }
-    }
-
-    /// Refresh the memoized caches from the current track list and search text.
+    /// Refresh the memoized cache from the current track list and search text.
     private func recomputeDerivedTracks() {
-        let filtered = Self.filterTracks(self.playlistManager.tracks, searchText: self.searchText)
-        self.filteredTracks = filtered
-        self.groupedTracks = Self.groupTracks(filtered)
+        self.filteredTracks = Self.filterTracks(self.playlistManager.tracks, searchText: self.searchText)
     }
 
     var body: some View {
@@ -105,48 +92,19 @@ struct PlaylistView: View {
                     .zIndex(100)
             }
 
-            // Playlist content - flat or grouped (only when not minimized)
+            // Playlist content (only when not minimized)
             if !self.isMinimized {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            if self.showGrouped {
-                                // Grouped view by artist
-                                ForEach(self.groupedTracks, id: \.artist) { group in
-                                    // Artist header (folder)
-                                    ArtistHeader(
-                                        artist: group.artist,
-                                        trackCount: group.tracks.count,
-                                        isExpanded: self.expandedArtists.contains(group.artist)
-                                    )
-                                    .contentShape(Rectangle())
-                                    .onTapGesture {
-                                        self.toggleArtist(group.artist)
-                                    }
-
-                                    // Tracks under this artist (if expanded)
-                                    if self.expandedArtists.contains(group.artist) {
-                                        ForEach(group.tracks, id: \.track.id) { indexedTrack in
-                                            self.playlistTrackRow(indexedTrack: indexedTrack, enableReorder: false)
-                                        }
-                                    }
-                                }
-                            } else {
-                                // Flat view - all tracks (filtered)
-                                ForEach(self.filteredTracks, id: \.track.id) { indexedTrack in
-                                    self.playlistTrackRow(indexedTrack: indexedTrack, enableReorder: true)
-                                }
+                            ForEach(self.filteredTracks, id: \.track.id) { indexedTrack in
+                                self.playlistTrackRow(indexedTrack: indexedTrack)
                             }
                         }
                     }
                     .background(WinampColors.playlistBg)
                     .onChange(of: self.playlistManager.tracks.count) { newCount in
-                        // When new tracks are added, expand all artists and scroll to show the last one
                         if newCount > self.lastTrackCount, !self.playlistManager.tracks.isEmpty {
-                            // Auto-expand all artists when tracks are added
-                            let allArtists = Set(playlistManager.tracks.map(\.artist))
-                            self.expandedArtists = allArtists
-
                             withAnimation {
                                 proxy.scrollTo(self.playlistManager.tracks.last?.id, anchor: .bottom)
                             }
@@ -164,6 +122,20 @@ struct PlaylistView: View {
                     }
                 }
                 .zIndex(0) // Ensure ScrollView is below search box
+                .onAppear {
+                    self.keyboardNavigation.bind(
+                        playlistManager: self.playlistManager,
+                        isMinimized: { self.isMinimized },
+                        visibleTracks: { self.filteredTracks },
+                        selectedTrack: self.$selectedTrack,
+                        userInitiatedPlayback: self.$userInitiatedPlayback
+                    )
+                    WinampPlaylistKeyboard.register(self.keyboardNavigation)
+                }
+                .onDisappear {
+                    WinampPlaylistKeyboard.unregister(self.keyboardNavigation)
+                    self.keyboardNavigation.unbind()
+                }
                 .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                     self.handleDrop(providers: providers)
                     return true
@@ -222,16 +194,6 @@ struct PlaylistView: View {
                         }
                     }
 
-                    // Toggle between flat and grouped view
-                    PlaylistButton(text: self.showGrouped ? "FLAT" : "GRP") {
-                        self.showGrouped.toggle()
-                        if self.showGrouped {
-                            // Auto-expand all artists when switching to grouped view
-                            let allArtists = Set(playlistManager.tracks.map(\.artist))
-                            self.expandedArtists = allArtists
-                        }
-                    }
-
                     PlaylistButton(text: "SAVE") {
                         self.playlistManager.saveM3UPlaylist()
                     }
@@ -266,14 +228,12 @@ struct PlaylistView: View {
 
     @ViewBuilder
     private func playlistTrackRow(
-        indexedTrack: (index: Int, track: Track),
-        enableReorder: Bool
+        indexedTrack: (index: Int, track: Track)
     ) -> some View {
         PlaylistTrackRow(
             indexedTrack: indexedTrack,
-            isPlaying: indexedTrack.index == self.playlistManager.currentIndex,
+            isCurrentTrack: indexedTrack.index == self.playlistManager.currentIndex,
             isSelected: indexedTrack.track.id == self.selectedTrack,
-            enableReorder: enableReorder,
             searchTextEmpty: self.searchText.isEmpty,
             selectedTrack: self.$selectedTrack,
             lastTappedTrack: self.$lastTappedTrack,
@@ -285,7 +245,22 @@ struct PlaylistView: View {
                 self.playlistManager.playTrack(at: index)
             },
             onRemove: { index in
+                let removedID = self.playlistManager.tracks[index].id
                 self.playlistManager.removeTrack(at: index)
+                if self.selectedTrack == removedID {
+                    self.selectedTrack = nil
+                }
+            },
+            onGetInfo: { index in
+                self.playlistManager.presentTrackInfo(at: index)
+            },
+            onRemoveFromDisk: { index in
+                let removedID = self.playlistManager.tracks[index].id
+                if self.playlistManager.removeTrackFromDisk(at: index),
+                   self.selectedTrack == removedID
+                {
+                    self.selectedTrack = nil
+                }
             },
             onMove: { from, to in
                 self.playlistManager.moveTrack(from: from, to: to)
@@ -293,46 +268,12 @@ struct PlaylistView: View {
         )
     }
 
-    func toggleArtist(_ artist: String) {
-        withAnimation(.easeInOut(duration: 0.2)) {
-            if self.expandedArtists.contains(artist) {
-                self.expandedArtists.remove(artist)
-            } else {
-                self.expandedArtists.insert(artist)
-            }
-        }
-    }
-
     func scrollToCurrentTrack(index: Int, proxy: ScrollViewProxy) {
-        // Ensure the index is valid
         guard index >= 0, index < self.playlistManager.tracks.count else { return }
 
         let currentTrack = self.playlistManager.tracks[index]
-
-        // If in grouped view, expand the artist of the current track
-        if self.showGrouped {
-            let artist = currentTrack.artist
-            if !self.expandedArtists.contains(artist) {
-                // Expand the artist first
-                self.expandedArtists.insert(artist)
-                // Small delay to allow the UI to update before scrolling
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 100_000_000)
-                    withAnimation {
-                        proxy.scrollTo(currentTrack.id, anchor: .center)
-                    }
-                }
-            } else {
-                // Already expanded, just scroll
-                withAnimation {
-                    proxy.scrollTo(currentTrack.id, anchor: .center)
-                }
-            }
-        } else {
-            // Flat view - just scroll to the track
-            withAnimation {
-                proxy.scrollTo(currentTrack.id, anchor: .center)
-            }
+        withAnimation {
+            proxy.scrollTo(currentTrack.id, anchor: .center)
         }
     }
 
@@ -353,7 +294,7 @@ struct PlaylistView: View {
 /// Isolates the 10 Hz elapsed-time readout. Because the legacy `ObservableObject`
 /// (`AudioPlayer`) re-renders every observing view on any `@Published` change, having
 /// the whole `PlaylistView` observe it made the playlist re-run its O(n log n) track
-/// filtering/grouping on every `currentTime` tick — starving the main-thread Metal
+/// filtering on every `currentTime` tick — starving the main-thread Metal
 /// visualizer. Only this small label observes `currentTime` now.
 private struct PlaylistElapsedTimeLabel: View {
     @EnvironmentObject var clock: PlaybackClock
@@ -368,9 +309,8 @@ private struct PlaylistElapsedTimeLabel: View {
 
 private struct PlaylistTrackRow: View {
     let indexedTrack: (index: Int, track: Track)
-    let isPlaying: Bool
+    let isCurrentTrack: Bool
     let isSelected: Bool
-    let enableReorder: Bool
     let searchTextEmpty: Bool
     @Binding var selectedTrack: Track.ID?
     @Binding var lastTappedTrack: Track.ID?
@@ -379,6 +319,8 @@ private struct PlaylistTrackRow: View {
     @Binding var draggedTrackIndex: Int?
     let onPlay: (Int) -> Void
     let onRemove: (Int) -> Void
+    let onGetInfo: (Int) -> Void
+    let onRemoveFromDisk: (Int) -> Void
     let onMove: (Int, Int) -> Void
 
     var body: some View {
@@ -386,14 +328,13 @@ private struct PlaylistTrackRow: View {
             ClassicPlaylistRow(
                 track: self.indexedTrack.track,
                 index: self.indexedTrack.index + 1,
-                isPlaying: self.isPlaying,
+                isCurrentTrack: self.isCurrentTrack,
                 isSelected: self.isSelected
             )
         }
         .buttonStyle(.plain)
         .id(self.indexedTrack.track.id)
         .modifier(PlaylistTrackReorderModifier(
-            enableReorder: self.enableReorder,
             trackIndex: self.indexedTrack.index,
             searchTextEmpty: self.searchTextEmpty,
             draggedTrackIndex: self.$draggedTrackIndex,
@@ -403,9 +344,18 @@ private struct PlaylistTrackRow: View {
             Button("Play") {
                 self.onPlay(self.indexedTrack.index)
             }
-            Button("Remove") {
+            Divider()
+            Button("Get Info") {
+                self.onGetInfo(self.indexedTrack.index)
+            }
+            .disabled(self.indexedTrack.track.url == nil)
+            Button("Remove from Playlist") {
                 self.onRemove(self.indexedTrack.index)
             }
+            Button("Remove from Disk", role: .destructive) {
+                self.onRemoveFromDisk(self.indexedTrack.index)
+            }
+            .disabled(self.indexedTrack.track.url == nil)
         }
     }
 
@@ -434,34 +384,29 @@ private struct PlaylistTrackRow: View {
 }
 
 private struct PlaylistTrackReorderModifier: ViewModifier {
-    let enableReorder: Bool
     let trackIndex: Int
     let searchTextEmpty: Bool
     @Binding var draggedTrackIndex: Int?
     let onMove: (Int, Int) -> Void
 
     func body(content: Content) -> some View {
-        if self.enableReorder {
-            content
-                .onDrag {
-                    guard self.searchTextEmpty else {
-                        return NSItemProvider()
-                    }
-                    self.draggedTrackIndex = self.trackIndex
-                    return NSItemProvider(object: String(self.trackIndex) as NSString)
+        content
+            .onDrag {
+                guard self.searchTextEmpty else {
+                    return NSItemProvider()
                 }
-                .onDrop(
-                    of: [.plainText],
-                    delegate: PlaylistRowDropDelegate(
-                        destinationIndex: self.trackIndex,
-                        draggedIndex: self.$draggedTrackIndex,
-                        isEnabled: self.searchTextEmpty,
-                        onMove: self.onMove
-                    )
+                self.draggedTrackIndex = self.trackIndex
+                return NSItemProvider(object: String(self.trackIndex) as NSString)
+            }
+            .onDrop(
+                of: [.plainText],
+                delegate: PlaylistRowDropDelegate(
+                    destinationIndex: self.trackIndex,
+                    draggedIndex: self.$draggedTrackIndex,
+                    isEnabled: self.searchTextEmpty,
+                    onMove: self.onMove
                 )
-        } else {
-            content
-        }
+            )
     }
 }
 
@@ -494,13 +439,20 @@ struct PlaylistRowDropDelegate: DropDelegate {
 struct ClassicPlaylistRow: View {
     let track: Track
     let index: Int
-    let isPlaying: Bool
+    let isCurrentTrack: Bool
     let isSelected: Bool
     @Environment(\.winampUIScale) private var uiScale
 
-    private var rowColor: Color {
-        if self.isPlaying || self.isSelected { return .white }
-        return WinampColors.playlistText
+    private var indexColor: Color {
+        self.isCurrentTrack ? WinampColors.playlistCurrentTrack : WinampColors.playlistText
+    }
+
+    private var titleColor: Color {
+        self.isCurrentTrack ? WinampColors.playlistCurrentTrack : WinampColors.playlistText
+    }
+
+    private var durationColor: Color {
+        self.isCurrentTrack ? WinampColors.playlistCurrentTrack : WinampColors.playlistText
     }
 
     var body: some View {
@@ -508,13 +460,13 @@ struct ClassicPlaylistRow: View {
             // Index with dot — simple "N." numbering, bold proportional (classic skin look)
             Text("\(self.index).")
                 .winampFont(size: 14, weight: .bold, scale: uiScale)
-                .foregroundColor(self.rowColor)
+                .foregroundColor(self.indexColor)
                 .frame(minWidth: 22 * uiScale, alignment: .trailing)
 
             // Artist - Title
             Text("\(self.track.artist) - \(self.track.title)")
                 .winampFont(size: 14, weight: .bold, scale: uiScale)
-                .foregroundColor(self.rowColor)
+                .foregroundColor(self.titleColor)
                 .lineLimit(1)
                 .truncationMode(.tail)
 
@@ -523,14 +475,91 @@ struct ClassicPlaylistRow: View {
             // Duration
             Text(self.track.formattedDuration)
                 .winampFont(size: 14, weight: .bold, scale: uiScale)
-                .foregroundColor(self.rowColor)
+                .foregroundColor(self.durationColor)
         }
         .padding(.horizontal, 8 * uiScale)
         .padding(.vertical, 0)
         .frame(height: WinampMetrics.playlistRowHeight * uiScale)
         .background(
-            self.isPlaying || self.isSelected ? WinampColors.playlistSelected : Color.clear
+            self.isSelected ? WinampColors.playlistSelected : Color.clear
         )
+    }
+}
+
+/// Bridges playlist keyboard commands from `AppDelegate` into view-local selection state.
+@MainActor
+private final class PlaylistKeyboardNavigation: WinampPlaylistKeyboard.Handling {
+    private weak var playlistManager: PlaylistManager?
+    private var isMinimized: (() -> Bool)?
+    private var visibleTracks: (() -> [(index: Int, track: Track)])?
+    private var selectedTrack: Binding<Track.ID?>?
+    private var userInitiatedPlayback: Binding<Bool>?
+
+    func bind(
+        playlistManager: PlaylistManager,
+        isMinimized: @escaping () -> Bool,
+        visibleTracks: @escaping () -> [(index: Int, track: Track)],
+        selectedTrack: Binding<Track.ID?>,
+        userInitiatedPlayback: Binding<Bool>
+    ) {
+        self.playlistManager = playlistManager
+        self.isMinimized = isMinimized
+        self.visibleTracks = visibleTracks
+        self.selectedTrack = selectedTrack
+        self.userInitiatedPlayback = userInitiatedPlayback
+    }
+
+    func unbind() {
+        self.playlistManager = nil
+        self.isMinimized = nil
+        self.visibleTracks = nil
+        self.selectedTrack = nil
+        self.userInitiatedPlayback = nil
+    }
+
+    func moveSelection(by offset: Int) {
+        guard self.isMinimized?() == false,
+              let visibleTracks = self.visibleTracks?(),
+              !visibleTracks.isEmpty,
+              let selectedTrack = self.selectedTrack
+        else { return }
+
+        let anchorIndex = Self.anchorVisibleIndex(
+            in: visibleTracks,
+            selectedID: selectedTrack.wrappedValue,
+            currentPlaylistIndex: self.playlistManager?.currentIndex ?? -1
+        )
+        let nextIndex = min(max(anchorIndex + offset, 0), visibleTracks.count - 1)
+        selectedTrack.wrappedValue = visibleTracks[nextIndex].track.id
+    }
+
+    func playSelectedTrack() {
+        guard let playlistManager = self.playlistManager,
+              let visibleTracks = self.visibleTracks?(),
+              let selectedID = self.selectedTrack?.wrappedValue,
+              let indexedTrack = visibleTracks.first(where: { $0.track.id == selectedID })
+        else { return }
+
+        self.userInitiatedPlayback?.wrappedValue = true
+        playlistManager.playTrack(at: indexedTrack.index)
+    }
+
+    private static func anchorVisibleIndex(
+        in visibleTracks: [(index: Int, track: Track)],
+        selectedID: Track.ID?,
+        currentPlaylistIndex: Int
+    ) -> Int {
+        if let selectedID,
+           let selectedIndex = visibleTracks.firstIndex(where: { $0.track.id == selectedID })
+        {
+            return selectedIndex
+        }
+        if currentPlaylistIndex >= 0,
+           let currentIndex = visibleTracks.firstIndex(where: { $0.index == currentPlaylistIndex })
+        {
+            return currentIndex
+        }
+        return 0
     }
 }
 
@@ -573,40 +602,9 @@ struct PlaylistMenuButton<Content: View>: View {
     }
 }
 
-/// Artist folder header
-struct ArtistHeader: View {
-    let artist: String
-    let trackCount: Int
-    let isExpanded: Bool
-    @Environment(\.winampUIScale) private var uiScale
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Text(self.isExpanded ? "▼" : "▶")
-                .winampFont(size: 8, weight: .bold, scale: uiScale)
-                .foregroundColor(Color(red: 0.6, green: 0.8, blue: 0.6))
-                .frame(width: 15)
-
-            Text(self.artist)
-                .winampFont(size: 8, weight: .bold, scale: uiScale)
-                .foregroundColor(Color(red: 0.8, green: 0.9, blue: 0.8))
-                .lineLimit(1)
-
-            Spacer()
-
-            Text("(\(self.trackCount))")
-                .winampFont(size: 9, scale: uiScale)
-                .foregroundColor(Color(red: 0.6, green: 0.8, blue: 0.6))
-                .padding(.trailing, 4)
-        }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 2)
-        .frame(height: WinampMetrics.playlistRowHeight * uiScale + 2)
-        .background(Color(red: 0.1, green: 0.15, blue: 0.1))
-    }
-}
-
-/// Resize handle for bottom edge (vertical only)
+/// Resize handle for the bottom edge. Vertical drag resizes height; horizontal drag resizes width
+/// (the playlist may grow wider than the main window, classic-Winamp style). Width is clamped to at
+/// least the scaled panel width so the docked playlist never becomes narrower than its anchor.
 struct ResizeHandle: View {
     @Environment(\.winampUIScale) private var uiScale
     @Binding var isDragging: Bool
@@ -614,22 +612,19 @@ struct ResizeHandle: View {
     @State private var startSize: CGSize = .zero
     @State private var isHovering = false
 
+    private var minWidth: CGFloat { WinampMetrics.panelWidth * uiScale }
+
     var body: some View {
-        ZStack {
-            // Background area that's draggable - full width, small height
+        ZStack(alignment: .bottomTrailing) {
+            // Full-width strip so the bottom edge is grabbable anywhere for vertical resize.
             Rectangle()
                 .fill(Color.gray.opacity(0.001))
                 .frame(height: 12)
 
-            // Visual indicator (horizontal lines for vertical resize)
-            HStack(spacing: 2) {
-                ForEach(0 ..< 3) { i in
-                    Rectangle()
-                        .fill(i % 2 == 0 ? WinampColors.buttonDark : WinampColors.buttonLight)
-                        .frame(width: 8, height: 1)
-                }
-            }
-            .padding(.bottom, 2)
+            // Diagonal corner grip hints both-axis resize (classic playlist bottom-right grip).
+            ResizeGrip()
+                .padding(.trailing, 3)
+                .padding(.bottom, 2)
         }
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
@@ -641,9 +636,13 @@ struct ResizeHandle: View {
                         self.startSize = self.playlistSize
                         self.isDragging = true
                     }
-                    // Width tracks the scaled panel; height is user-resizable.
-                    let newHeight = max(150, startSize.height + value.translation.height)
-                    self.playlistSize = CGSize(width: WinampUIScale.basePanelWidth * uiScale, height: newHeight)
+                    let newWidth = max(self.minWidth, self.startSize.width + value.translation.width)
+                    let newHeight = max(150, self.startSize.height + value.translation.height)
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        self.playlistSize = CGSize(width: newWidth, height: newHeight)
+                    }
                 }
                 .onEnded { _ in
                     self.isDragging = false
@@ -651,12 +650,29 @@ struct ResizeHandle: View {
         )
         .onHover { hovering in
             if hovering {
-                NSCursor.resizeUpDown.push()
+                NSCursor.crosshair.push()
                 self.isHovering = true
             } else if self.isHovering {
                 NSCursor.pop()
                 self.isHovering = false
             }
         }
+    }
+}
+
+/// Three diagonal strokes drawn in the bottom-right corner — the classic Winamp resize affordance.
+private struct ResizeGrip: View {
+    var body: some View {
+        Canvas { context, size in
+            for i in 0 ..< 3 {
+                let inset = CGFloat(i) * 3 + 1
+                var path = Path()
+                path.move(to: CGPoint(x: size.width - inset, y: size.height))
+                path.addLine(to: CGPoint(x: size.width, y: size.height - inset))
+                context.stroke(path, with: .color(WinampColors.buttonLight), lineWidth: 1)
+            }
+        }
+        .frame(width: 9, height: 9)
+        .allowsHitTesting(false)
     }
 }

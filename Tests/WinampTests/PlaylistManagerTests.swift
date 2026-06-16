@@ -18,6 +18,37 @@ final class PlaylistManagerTests: XCTestCase {
         }
     }
 
+    func testAddTrackDoesNotAutoPlay() {
+        self.manager.addTrack(self.makeTracks(1)[0])
+        waitForMainQueue(after: 0.2)
+        XCTAssertEqual(self.manager.currentIndex, -1)
+        XCTAssertEqual(self.mockPlayer.playCallCount, 0)
+        XCTAssertEqual(self.mockPlayer.loadTrackCalls.count, 0)
+    }
+
+    func testAddTracksDoesNotAutoPlay() {
+        self.manager.addTracks(self.makeTracks(3))
+        waitForMainQueue(after: 0.2)
+        XCTAssertEqual(self.manager.currentIndex, -1)
+        XCTAssertEqual(self.mockPlayer.playCallCount, 0)
+        XCTAssertEqual(self.mockPlayer.loadTrackCalls.count, 0)
+    }
+
+    func testRemoveTrackFromDiskMovesFileToTrashAndRemovesPlaylistEntry() throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("trash-\(UUID().uuidString).mp3")
+        FileManager.default.createFile(atPath: fileURL.path, contents: Data([0x00, 0x01]))
+        defer {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+
+        self.manager.tracks = [Track(title: "Trash Me", artist: "Artist", url: fileURL)]
+        XCTAssertTrue(self.manager.removeTrackFromDisk(at: 0, confirm: { _ in true }))
+
+        XCTAssertTrue(self.manager.tracks.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+    }
+
     func testNextSequentialAdvancesIndex() {
         self.manager.tracks = self.makeTracks(3)
         self.manager.currentIndex = 0

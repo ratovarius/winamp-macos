@@ -16,7 +16,7 @@ final class DraggableWindowView: NSView {
         }
 
         if event.clickCount == 2 {
-            window.performMiniaturize(nil)
+            WinampPanelWindowManager.shared.toggleWindowshade(for: window)
             return
         }
         WinampPanelWindowManager.shared.startDrag(leading: window, event: event)

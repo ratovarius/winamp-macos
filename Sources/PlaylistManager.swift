@@ -100,30 +100,14 @@ class PlaylistManager: ObservableObject {
     func addTrack(_ track: Track) {
         self.tracks.append(track)
         self.persistState()
-        if !self.isRestoringState, self.currentIndex == -1 {
-            self.scheduleAutoPlayFirstTrackIfNeeded()
-        }
     }
 
     func addTracks(_ newTracks: [Track]) {
-        let wasEmpty = self.tracks.isEmpty
         self.tracks.append(contentsOf: newTracks)
         self.persistState()
 
         if self.shuffleEnabled {
             self.generateShuffledIndices()
-        }
-
-        if !self.isRestoringState, wasEmpty, !self.tracks.isEmpty {
-            self.scheduleAutoPlayFirstTrackIfNeeded()
-        }
-    }
-
-    private func scheduleAutoPlayFirstTrackIfNeeded() {
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            guard let self, self.currentIndex == -1, !self.tracks.isEmpty else { return }
-            self.playTrack(at: 0)
         }
     }
 
@@ -147,6 +131,71 @@ class PlaylistManager: ObservableObject {
             self.currentIndex -= 1
         }
         self.persistState()
+    }
+
+    func presentTrackInfo(at index: Int) {
+        guard index >= 0, index < self.tracks.count else { return }
+        let track = self.tracks[index]
+        guard let url = track.url else { return }
+
+        _ = self.bookmarkStore.ensureAccess(for: url)
+
+        let alert = NSAlert()
+        alert.messageText = "\(track.artist) — \(track.title)"
+        alert.informativeText = TrackInfoFormatter.summary(for: track)
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    @discardableResult
+    func removeTrackFromDisk(at index: Int, confirm: ((URL) -> Bool)? = nil) -> Bool {
+        guard index >= 0, index < self.tracks.count else { return false }
+        let track = self.tracks[index]
+        guard let url = track.url else { return false }
+
+        guard self.bookmarkStore.ensureAccess(for: url) else {
+            self.showFileActionError(
+                title: "Cannot Remove File",
+                message: "Winamp does not have permission to modify this file. Re-add it from its folder to grant access."
+            )
+            return false
+        }
+
+        let shouldTrash = confirm?(url) ?? Self.confirmTrash(for: url)
+        guard shouldTrash else { return false }
+
+        do {
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            self.removeTrack(at: index)
+            return true
+        } catch {
+            playlistLogger.error("Failed to trash \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            self.showFileActionError(
+                title: "Could Not Move to Trash",
+                message: error.localizedDescription
+            )
+            return false
+        }
+    }
+
+    private static func confirmTrash(for url: URL) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Move to Trash?"
+        alert.informativeText = "“\(url.lastPathComponent)” will be moved to the Trash and removed from the playlist."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func showFileActionError(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     func clearPlaylist() {

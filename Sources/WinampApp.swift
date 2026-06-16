@@ -104,6 +104,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
 
+            let noModifiers = event.modifierFlags.intersection([.command, .option, .control]).isEmpty
+            if noModifiers, WinampPlaylistKeyboard.isActive, !WinampPlaylistSearchFocus.isActive,
+               let window = NSApp.keyWindow,
+               WinampPanelWindowManager.shared.isPlaylistWindow(window)
+            {
+                switch event.keyCode {
+                case 126: // up arrow
+                    WinampPlaylistKeyboard.moveSelection(by: -1)
+                    return nil
+                case 125: // down arrow
+                    WinampPlaylistKeyboard.moveSelection(by: 1)
+                    return nil
+                case 36: // return
+                    WinampPlaylistKeyboard.playSelectedTrack()
+                    return nil
+                default:
+                    break
+                }
+            }
+
             guard event.keyCode == 49,
                   event.modifierFlags.intersection([.command, .option, .control]).isEmpty
             else {

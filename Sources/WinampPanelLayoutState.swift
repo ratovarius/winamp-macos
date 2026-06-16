@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 final class WinampPanelLayoutState: ObservableObject {
     private static let playlistHeightKey = "playlistHeight"
+    private static let playlistWidthKey = "playlistWidth"
 
     @Published var showEqualizer = true
     @Published var showPlaylist = true
@@ -11,20 +12,29 @@ final class WinampPanelLayoutState: ObservableObject {
     @Published var playlistMinimized = false
     @Published var playlistSize: CGSize {
         didSet {
-            guard oldValue.height != self.playlistSize.height else { return }
-            UserDefaults.standard.set(self.playlistSize.height, forKey: Self.playlistHeightKey)
+            if oldValue.height != self.playlistSize.height {
+                UserDefaults.standard.set(self.playlistSize.height, forKey: Self.playlistHeightKey)
+            }
+            if oldValue.width != self.playlistSize.width {
+                UserDefaults.standard.set(self.playlistSize.width, forKey: Self.playlistWidthKey)
+            }
         }
     }
 
     init() {
         let savedHeight = UserDefaults.standard.double(forKey: Self.playlistHeightKey)
         let height = savedHeight > 0 ? savedHeight : WinampMetrics.defaultPlaylistHeight
-        self.playlistSize = CGSize(width: WinampUIScale.basePanelWidth, height: height)
+        let savedWidth = UserDefaults.standard.double(forKey: Self.playlistWidthKey)
+        let width = savedWidth > 0 ? savedWidth : WinampUIScale.basePanelWidth
+        self.playlistSize = CGSize(width: width, height: height)
     }
 
-    func setPlaylistWidth(_ width: CGFloat) {
-        guard self.playlistSize.width != width else { return }
-        self.playlistSize = CGSize(width: width, height: self.playlistSize.height)
+    /// Ensure the playlist is at least as wide as its docking anchor (the main window). The user
+    /// may drag it wider; a UI-scale change only grows it up to the new minimum and never shrinks a
+    /// user-widened playlist.
+    func ensureMinimumPlaylistWidth(_ minWidth: CGFloat) {
+        guard self.playlistSize.width < minWidth else { return }
+        self.playlistSize = CGSize(width: minWidth, height: self.playlistSize.height)
     }
 
     var isEqualizerDocked: Bool {

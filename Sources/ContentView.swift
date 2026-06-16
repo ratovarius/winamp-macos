@@ -77,7 +77,7 @@ struct ContentView: View {
             self.bindPlaybackCoordination()
             self.setupWindow()
             self.loadStartupSound()
-            self.panelLayout.setPlaylistWidth(self.uiScale.panelWidth)
+            self.panelLayout.ensureMinimumPlaylistWidth(self.uiScale.panelWidth)
             self.syncPanelWindows()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
@@ -91,7 +91,7 @@ struct ContentView: View {
             }
         }
         .onChange(of: self.uiScale.level) { _ in
-            self.panelLayout.setPlaylistWidth(self.uiScale.panelWidth)
+            self.panelLayout.ensureMinimumPlaylistWidth(self.uiScale.panelWidth)
             self.syncPanelWindows()
         }
         .onChange(of: self.panelLayout.isShadeMode) { newValue in
@@ -105,10 +105,10 @@ struct ContentView: View {
             self.syncPanelWindows()
         }
         .onChange(of: self.panelLayout.playlistSize) { _ in
-            WinampPanelWindowManager.shared.syncPanels()
+            WinampPanelWindowManager.shared.resizePlaylistPanel()
         }
         .onChange(of: self.panelLayout.playlistMinimized) { _ in
-            WinampPanelWindowManager.shared.syncPanels()
+            WinampPanelWindowManager.shared.resizePlaylistPanel()
         }
     }
 
@@ -183,7 +183,7 @@ struct ContentView: View {
     private func configureWindow(_ window: NSWindow) {
         guard !WinampPanelWindowManager.shared.isPanelWindow(window) else { return }
 
-        WinampWindowConfigurator.apply(to: window)
+        WinampWindowConfigurator.apply(to: window, resizable: false)
 
         let windowID = ObjectIdentifier(window)
         guard !Self.positionedWindows.contains(windowID) else { return }

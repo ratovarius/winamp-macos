@@ -373,32 +373,40 @@ struct WinampSkinToggle: View {
 
 /// Classic raised outer bevel framing a Winamp window or detached panel.
 struct WinampOuterFrameModifier: ViewModifier {
+    /// When true, height follows an explicit `.frame(height:)` instead of intrinsic content size.
+    var flexibleVertical: Bool = false
+
     func body(content: Content) -> some View {
-        content
-            .fixedSize()
-            .background(WinampColors.titleBar)
-            .overlay(
-                Rectangle()
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                WinampColors.borderLight.opacity(0.9),
-                                WinampColors.borderLight.opacity(0.3),
-                                WinampColors.borderDark.opacity(0.5),
-                                WinampColors.borderDark.opacity(0.9),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1
-                    )
-                    .allowsHitTesting(false)
-            )
+        Group {
+            if self.flexibleVertical {
+                content.fixedSize(horizontal: true, vertical: false)
+            } else {
+                content.fixedSize()
+            }
+        }
+        .background(WinampColors.titleBar)
+        .overlay(
+            Rectangle()
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            WinampColors.borderLight.opacity(0.9),
+                            WinampColors.borderLight.opacity(0.3),
+                            WinampColors.borderDark.opacity(0.5),
+                            WinampColors.borderDark.opacity(0.9),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+                .allowsHitTesting(false)
+        )
     }
 }
 
 extension View {
-    func winampOuterFrame() -> some View {
-        self.modifier(WinampOuterFrameModifier())
+    func winampOuterFrame(flexibleVertical: Bool = false) -> some View {
+        self.modifier(WinampOuterFrameModifier(flexibleVertical: flexibleVertical))
     }
 }

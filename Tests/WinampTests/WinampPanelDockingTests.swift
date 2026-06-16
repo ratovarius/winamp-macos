@@ -20,6 +20,18 @@ final class WinampPanelDockingTests: XCTestCase {
         XCTAssertEqual(anchor, .main)
     }
 
+    /// W2 regression: hiding the EQ leaves its window allocated but ordered out, so the docked
+    /// flag can still read true for a frame. The playlist must anchor to the main window rather
+    /// than stack below the now-invisible EQ (which opened an EQ-height gap under the main window).
+    func testPlaylistAnchorsToMainWhenEqualizerHiddenButStillDocked() {
+        let anchor = WinampPanelDocking.playlistAnchor(
+            isEqualizerDocked: true,
+            isEqualizerVisible: false,
+            isEqualizerFloating: false
+        )
+        XCTAssertEqual(anchor, .main)
+    }
+
     func testPlaylistAnchorsToMainInShadeMode() {
         let anchor = WinampPanelDocking.playlistAnchor(
             isEqualizerDocked: false,
