@@ -75,7 +75,13 @@ enum EQFParser {
         bytes.append(contentsOf: [0x1A, 0x21, 0x2D, 0x2D]) // "\u{1A}!--"
 
         for preset in presets {
-            var nameField = [UInt8](preset.name.utf8).prefix(nameLength - 1).map { $0 }
+            // Truncate by whole characters, not raw UTF-8 bytes, so a multi-byte character is
+            // never sliced in half (which would leave invalid UTF-8 in the name field).
+            var name = preset.name
+            while name.utf8.count > nameLength - 1 {
+                name.removeLast()
+            }
+            var nameField = [UInt8](name.utf8)
             nameField.append(contentsOf: Array(repeating: 0, count: nameLength - nameField.count))
             bytes.append(contentsOf: nameField)
 

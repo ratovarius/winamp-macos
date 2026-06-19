@@ -185,8 +185,10 @@ final class WinampPanelWindowManager {
             mouseStart: NSEvent.mouseLocation
         )
 
+        #if DEBUG
         // TEMP [DRAG] diagnostic.
         DragTrace.log("START lead=\(self.dragLabel(for: window)) moving=\(moving.count)")
+        #endif
 
         self.dragEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { [weak self] event in
             let eventType = event.type
@@ -300,10 +302,12 @@ final class WinampPanelWindowManager {
             window.setFrameOrigin(NSPoint(x: start.x + final.width, y: start.y + final.height))
         }
 
+        #if DEBUG
         // TEMP [DRAG] diagnostic.
         let snapNote = (correction.width != 0 || correction.height != 0)
             ? "SNAP dx=\(Int(correction.width)) dy=\(Int(correction.height))" : "free"
         DragTrace.log("move lead=\(self.dragLabel(for: drag.lead)) n=\(drag.moving.count) stationary=\(stationaryBoxes.count) \(snapNote)")
+        #endif
     }
 
     private func dragLabel(for window: NSWindow) -> String {
@@ -339,6 +343,7 @@ final class WinampPanelWindowManager {
             self.persistPositions()
         }
 
+        #if DEBUG
         // TEMP [DRAG] diagnostic — final arrangement + derived parents.
         if wasDragging {
             let parents = self.currentDockParents()
@@ -357,6 +362,7 @@ final class WinampPanelWindowManager {
                 .joined(separator: " ")
             DragTrace.log("END \(summary)")
         }
+        #endif
     }
 
     /// Save every visible panel's offset from the main window so the arrangement restores on relaunch.
@@ -628,9 +634,10 @@ final class WinampPanelWindowManager {
     }
 }
 
+#if DEBUG
 /// TEMP: lightweight stderr trace for studying drag/magnetism feel. Prints `[DRAG]` lines with a
 /// millisecond timestamp so cadence is visible in the streamed terminal output. Remove once the
-/// magnetic snapping is tuned.
+/// magnetic snapping is tuned. Debug-only — excluded from release builds.
 private enum DragTrace {
     private static let start = Date()
     private static let fileURL = URL(fileURLWithPath: "/tmp/winamp_drag.log")
@@ -646,6 +653,7 @@ private enum DragTrace {
         self.handle?.write(Data(line.utf8))
     }
 }
+#endif
 
 /// Observing root for the detached playlist window.
 ///

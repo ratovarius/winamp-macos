@@ -477,10 +477,12 @@ private struct PlayerSeekBar: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { drag in
+                        guard geo.size.width > 0 else { return }
                         self.seekDragging = true
                         self.seekDragPercent = max(0, min(1, Double(drag.location.x / geo.size.width)))
                     }
                     .onEnded { drag in
+                        guard geo.size.width > 0 else { return }
                         let percent = max(0, min(1, Double(drag.location.x / geo.size.width)))
                         let newTime = self.audioPlayer.duration * percent
                         self.audioPlayer.seek(to: max(0, min(newTime, self.audioPlayer.duration - 0.1)))
