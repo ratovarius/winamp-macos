@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Classic Winamp skin sprite coordinates
 /// Based on the standard Winamp Base skin layout
-struct WinampSkinSprites {
+struct WinampSkinSprites: @unchecked Sendable {
     static let shared = WinampSkinSprites()
 
     /// Load the main skin image
