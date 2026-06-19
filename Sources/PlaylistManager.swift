@@ -1,641 +1,645 @@
-import Foundation
 import AppKit
 import Combine
-import Darwin
+import Foundation
+import os
 
-// MARK: - Network Volume Detection
+private let playlistLogger = Logger(subsystem: "com.winamp.macos", category: "Playlist")
 
-/// Determines if a URL points to a file on a network volume
-/// Uses statfs system call to check the MNT_LOCAL flag
-private func isNetworkVolume(_ url: URL) -> Bool {
-    var stat = statfs()
-    let path = url.path
-    // statfs requires a C string (null-terminated)
-    let result = path.withCString { cString in
-        statfs(cString, &stat)
+struct PlaylistRestoreSummary: Equatable {
+    let loadedCount: Int
+    let skippedCount: Int
+    let skippedPaths: [String]
+
+    var userMessage: String {
+        let noun = self.skippedCount == 1 ? "track" : "tracks"
+        if self.loadedCount == 0 {
+            return "None of the \(self.skippedCount) saved \(noun) could be restored. Re-add your music files to rebuild the playlist."
+        }
+        let loadedNoun = self.loadedCount == 1 ? "track" : "tracks"
+        return "\(self.skippedCount) \(noun) could not be restored (missing file or permission). \(self.loadedCount) \(loadedNoun) loaded."
     }
-    guard result == 0 else {
-        // If statfs fails, fall back to path-based check
-        return url.path.hasPrefix("/Volumes/")
-    }
-    // MNT_LOCAL flag indicates local filesystem
-    // If the flag is not set, it's a network volume
-    return (stat.f_flags & UInt32(MNT_LOCAL)) == 0
 }
 
+@MainActor
 class PlaylistManager: ObservableObject {
     static let shared = PlaylistManager()
-    
+
     @Published var tracks: [Track] = []
     @Published var currentIndex: Int = -1
     @Published var shuffleEnabled: Bool = false {
         didSet {
-            if shuffleEnabled {
-                // Generate shuffle order when enabled
-                generateShuffledIndices()
+            if self.shuffleEnabled {
+                self.generateShuffledIndices()
             } else {
-                // Clear shuffle order when disabled
-                shuffledIndices.removeAll()
-                shuffleCurrentIndex = 0
+                self.shuffledIndices.removeAll()
+                self.shuffleCurrentIndex = 0
+            }
+            if !self.isRestoringState {
+                self.persistState()
             }
         }
     }
-    @Published var repeatEnabled: Bool = false
-    
-    private var cancellables = Set<AnyCancellable>()
-    private var isLoadingTrack = false
-    
+
+    @Published var repeatEnabled: Bool = false {
+        didSet {
+            if !self.isRestoringState {
+                self.persistState()
+            }
+        }
+    }
+
+    @Published private(set) var lastRestoreSummary: PlaylistRestoreSummary?
+    @Published private(set) var lastSaveErrorMessage: String?
+
+    private var playRequestGeneration = 0
+    private var isRestoringState = false
+
     // Shuffle management
     private var shuffledIndices: [Int] = []
     private var shuffleCurrentIndex: Int = 0
-    
-    // Security-scoped bookmark management
-    private var activeSecurityScopes: Set<URL> = []
-    private var securityScopedBookmarks: [Data] = []
-    private let bookmarksKey = "WinampSecurityScopedBookmarks"
-    
-    init() {
-        // No automatic playback on index change to prevent feedback loops
-        // Restore security-scoped bookmarks from previous session
-        restoreSecurityScopedBookmarks()
+
+    private let audioPlayer: AudioPlaybackControlling
+    private let bookmarkStore: SecurityScopedBookmarkStore
+    private let fileService: PlaylistFileService
+    private let stateStore: PlaylistStateStore
+
+    init(
+        audioPlayer: AudioPlaybackControlling = AudioPlayer.shared,
+        restoreBookmarks: Bool = true,
+        restorePlaylist: Bool = true,
+        bookmarkStore: SecurityScopedBookmarkStore? = nil,
+        stateStore: PlaylistStateStore? = nil
+    ) {
+        self.audioPlayer = audioPlayer
+        let store = bookmarkStore ?? SecurityScopedBookmarkStore()
+        self.bookmarkStore = store
+        self.fileService = PlaylistFileService(bookmarkStore: store)
+        self.stateStore = stateStore ?? PlaylistStateStore()
+        if restoreBookmarks {
+            store.restore()
+        }
+        if restorePlaylist {
+            self.restorePersistedState()
+        }
     }
-    
+
     deinit {
-        // Release all security scopes on deinit
-        releaseAllSecurityScopes()
+        bookmarkStore.releaseAll()
     }
-    
+
     var currentTrack: Track? {
-        guard currentIndex >= 0 && currentIndex < tracks.count else { return nil }
-        return tracks[currentIndex]
+        guard self.currentIndex >= 0, self.currentIndex < self.tracks.count else { return nil }
+        return self.tracks[self.currentIndex]
     }
-    
+
+    /// Startup chime plays only on a fresh launch with no restored playlist.
+    var shouldPlayStartupSoundOnLaunch: Bool {
+        self.tracks.isEmpty
+    }
+
     func addTrack(_ track: Track) {
-        // Ensure this runs on main thread
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.tracks.append(track)
-            if self.currentIndex == -1 {
-                // Delay slightly to ensure UI updates complete
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    self.playTrack(at: 0)
-                }
-            }
-        }
+        self.tracks.append(track)
+        self.persistState()
     }
-    
+
     func addTracks(_ newTracks: [Track]) {
-        // Ensure this runs on main thread
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            let wasEmpty = self.tracks.isEmpty
-            self.tracks.append(contentsOf: newTracks)
-            
-            // Regenerate shuffle order if shuffle is enabled
-            if self.shuffleEnabled {
-                self.generateShuffledIndices()
-            }
-            
-            // Only auto-play if playlist was empty
-            if wasEmpty && !self.tracks.isEmpty {
-                // Delay slightly to ensure UI updates complete
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    self.playTrack(at: 0)
-                }
-            }
+        self.tracks.append(contentsOf: newTracks)
+        self.persistState()
+
+        if self.shuffleEnabled {
+            self.generateShuffledIndices()
         }
     }
-    
+
     func removeTrack(at index: Int) {
-        guard index >= 0 && index < tracks.count else { return }
-        tracks.remove(at: index)
-        
+        guard index >= 0, index < self.tracks.count else { return }
+        self.tracks.remove(at: index)
+
         // Regenerate shuffle order if shuffle is enabled
-        if shuffleEnabled {
-            generateShuffledIndices()
+        if self.shuffleEnabled {
+            self.generateShuffledIndices()
         }
-        
-        if tracks.isEmpty {
-            currentIndex = -1
-            AudioPlayer.shared.stop()
-        } else if index == currentIndex {
-            // Removed current track, play next one (or previous if last)
-            currentIndex = min(index, tracks.count - 1)
-        } else if index < currentIndex {
-            currentIndex -= 1
+
+        if self.tracks.isEmpty {
+            self.currentIndex = -1
+            self.audioPlayer.stop()
+        } else if index == self.currentIndex {
+            // Removed current track — play what is now at this index (former next track)
+            self.currentIndex = min(index, self.tracks.count - 1)
+            self.playTrack(at: self.currentIndex)
+        } else if index < self.currentIndex {
+            self.currentIndex -= 1
         }
+        self.persistState()
     }
-    
-    func clearPlaylist() {
-        // Note: We keep security scopes active even when clearing playlist
-        // so that saved playlists can still access files on next launch
-        tracks.removeAll()
-        currentIndex = -1
-        shuffledIndices.removeAll()
-        shuffleCurrentIndex = 0
-        AudioPlayer.shared.stop()
+
+    func presentTrackInfo(at index: Int) {
+        guard index >= 0, index < self.tracks.count else { return }
+        let track = self.tracks[index]
+        guard let url = track.url else { return }
+
+        _ = self.bookmarkStore.ensureAccess(for: url)
+
+        let alert = NSAlert()
+        alert.messageText = "\(track.artist) — \(track.title)"
+        alert.informativeText = TrackInfoFormatter.summary(for: track)
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
-    
-    // MARK: - Security-Scoped Resource Management
-    
-    private func saveSecurityScopedBookmark(for url: URL) {
-        do {
-            let bookmarkData = try url.bookmarkData(
-                options: [.withSecurityScope],
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
+
+    @discardableResult
+    func removeTrackFromDisk(at index: Int, confirm: ((URL) -> Bool)? = nil) -> Bool {
+        guard index >= 0, index < self.tracks.count else { return false }
+        let track = self.tracks[index]
+        guard let url = track.url else { return false }
+
+        guard self.bookmarkStore.ensureAccess(for: url) else {
+            self.showFileActionError(
+                title: "Cannot Remove File",
+                message: "Winamp does not have permission to modify this file. Re-add it from its folder to grant access."
             )
-            
-            // Store bookmark
-            securityScopedBookmarks.append(bookmarkData)
-            
-            // Persist to UserDefaults for persistence across app restarts
-            UserDefaults.standard.set(securityScopedBookmarks, forKey: bookmarksKey)
-            
-            // Start accessing the resource immediately
-            if url.startAccessingSecurityScopedResource() {
-                activeSecurityScopes.insert(url)
-            }
-            
-            // For network volumes, also try to save bookmarks for parent directories
-            // This helps when loading playlists that reference files on the same volume
-            if isNetworkVolume(url) {
-                var currentPath = url.deletingLastPathComponent()
-                // Save bookmarks for up to 3 parent directories on network volumes
-                for _ in 0..<3 {
-                    if isNetworkVolume(currentPath) && currentPath.path != "/Volumes" {
-                        // Check if we already have a bookmark for this path
-                        var alreadyHasBookmark = false
-                        for existingBookmark in securityScopedBookmarks {
-                            do {
-                                var isStale = false
-                                let existingURL = try URL(
-                                    resolvingBookmarkData: existingBookmark,
-                                    options: [.withSecurityScope, .withoutUI],
-                                    relativeTo: nil,
-                                    bookmarkDataIsStale: &isStale
-                                )
-                                if existingURL.path == currentPath.path {
-                                    alreadyHasBookmark = true
-                                    break
-                                }
-                            } catch {
-                                continue
-                            }
+            return false
+        }
+
+        let shouldTrash = confirm?(url) ?? Self.confirmTrash(for: url)
+        guard shouldTrash else { return false }
+
+        do {
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            self.removeTrack(at: index)
+            return true
+        } catch {
+            playlistLogger.error("Failed to trash \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            self.showFileActionError(
+                title: "Could Not Move to Trash",
+                message: error.localizedDescription
+            )
+            return false
+        }
+    }
+
+    private static func confirmTrash(for url: URL) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Move to Trash?"
+        alert.informativeText = "“\(url.lastPathComponent)” will be moved to the Trash and removed from the playlist."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func showFileActionError(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    func clearPlaylist() {
+        self.tracks.removeAll()
+        self.currentIndex = -1
+        self.shuffledIndices.removeAll()
+        self.shuffleCurrentIndex = 0
+        self.audioPlayer.stop()
+        self.persistState()
+    }
+
+    func playTrack(at index: Int) {
+        guard index >= 0, index < self.tracks.count else { return }
+
+        self.playRequestGeneration += 1
+        let requestId = self.playRequestGeneration
+        let previousIndex = self.currentIndex
+        self.currentIndex = index
+        let track = self.tracks[index]
+        self.persistState()
+
+        self.audioPlayer.loadTrack(track) { [weak self] success in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard requestId == self.playRequestGeneration else { return }
+                if success {
+                    if self.shuffleEnabled {
+                        if let shufflePos = self.shuffledIndices.firstIndex(of: index) {
+                            self.shuffleCurrentIndex = shufflePos
+                        } else {
+                            self.generateShuffledIndices()
                         }
-                        
-                        if !alreadyHasBookmark {
-                            do {
-                                let parentBookmark = try currentPath.bookmarkData(
-                                    options: [.withSecurityScope],
-                                    includingResourceValuesForKeys: nil,
-                                    relativeTo: nil
-                                )
-                                securityScopedBookmarks.append(parentBookmark)
-                                UserDefaults.standard.set(securityScopedBookmarks, forKey: bookmarksKey)
-                                if currentPath.startAccessingSecurityScopedResource() {
-                                    activeSecurityScopes.insert(currentPath)
-                                }
-                            } catch {
-                                // Can't create bookmark for parent, that's okay
-                                break
-                            }
-                        }
-                        
-                        currentPath = currentPath.deletingLastPathComponent()
-                    } else {
-                        break
                     }
+                    self.audioPlayer.play()
+                } else {
+                    self.currentIndex = previousIndex
+                    self.persistState()
                 }
             }
-        } catch {
-            // Failed to create security-scoped bookmark
         }
     }
-    
-    private func restoreSecurityScopedBookmarks() {
-        guard let bookmarks = UserDefaults.standard.array(forKey: bookmarksKey) as? [Data] else {
+
+    func moveTrack(from sourceIndex: Int, to destinationIndex: Int) {
+        guard sourceIndex != destinationIndex,
+              sourceIndex >= 0, sourceIndex < self.tracks.count,
+              destinationIndex >= 0, destinationIndex < self.tracks.count
+        else {
             return
         }
-        
-        securityScopedBookmarks = bookmarks
-        var restoredCount = 0
-        
-        for bookmarkData in bookmarks {
-            do {
-                var isStale = false
-                let url = try URL(
-                    resolvingBookmarkData: bookmarkData,
-                    options: [.withSecurityScope, .withoutUI],
-                    relativeTo: nil,
-                    bookmarkDataIsStale: &isStale
-                )
-                
-                if !isStale {
-                    if url.startAccessingSecurityScopedResource() {
-                        activeSecurityScopes.insert(url)
-                        restoredCount += 1
-                    }
-                } else {
-                    // Remove stale bookmark
-                    securityScopedBookmarks.removeAll { $0 == bookmarkData }
-                }
-            } catch {
-                // Remove invalid bookmark
-                securityScopedBookmarks.removeAll { $0 == bookmarkData }
-            }
+
+        let track = self.tracks.remove(at: sourceIndex)
+        self.tracks.insert(track, at: destinationIndex)
+
+        if self.currentIndex == sourceIndex {
+            self.currentIndex = destinationIndex
+        } else if sourceIndex < self.currentIndex, destinationIndex >= self.currentIndex {
+            self.currentIndex -= 1
+        } else if sourceIndex > self.currentIndex, destinationIndex <= self.currentIndex {
+            self.currentIndex += 1
         }
-        
-        // Update UserDefaults with cleaned bookmarks
-        UserDefaults.standard.set(securityScopedBookmarks, forKey: bookmarksKey)
+
+        if self.shuffleEnabled {
+            self.generateShuffledIndices()
+        }
+        self.persistState()
     }
-    
-    private func ensureSecurityScopedAccess(for url: URL) -> Bool {
-        // Check if we already have access
-        if activeSecurityScopes.contains(url) {
-            return true
-        }
-        
-        let isNetwork = isNetworkVolume(url)
-        
-        // For network volumes, security-scoped access might not work the same way
-        // Try to get access to parent directories up to the volume mount point
-        if isNetwork {
-            // Try to get access to the volume or parent directories
-            var currentPath = url
-            while currentPath.path != "/" && currentPath.path != "/Volumes" {
-                if currentPath.startAccessingSecurityScopedResource() {
-                    activeSecurityScopes.insert(currentPath)
-                    return true
-                }
-                currentPath = currentPath.deletingLastPathComponent()
-            }
-            // For network volumes, even if security-scoped access fails,
-            // the volume might be accessible if it's mounted
-            // Return true to allow the attempt
-            return true
-        }
-        
-        // For local files, try standard security-scoped access
-        if url.startAccessingSecurityScopedResource() {
-            activeSecurityScopes.insert(url)
-            return true
-        }
-        
-        // Try parent directory
-        let parentDir = url.deletingLastPathComponent()
-        if parentDir.startAccessingSecurityScopedResource() {
-            activeSecurityScopes.insert(parentDir)
-            return true
-        }
-        
-        return false
-    }
-    
-    private func releaseAllSecurityScopes() {
-        for url in activeSecurityScopes {
-            url.stopAccessingSecurityScopedResource()
-        }
-        activeSecurityScopes.removeAll()
-    }
-    
-    func playTrack(at index: Int) {
-        guard index >= 0 && index < tracks.count else { return }
-        guard !isLoadingTrack else { return } // Prevent concurrent track loads
-        
-        isLoadingTrack = true
-        currentIndex = index
-        
-        // Update shuffle position if shuffle is enabled
-        if shuffleEnabled {
-            if let shufflePos = shuffledIndices.firstIndex(of: index) {
-                shuffleCurrentIndex = shufflePos
-            } else {
-                // Current track not in shuffle list, regenerate
-                generateShuffledIndices()
-            }
-        }
-        
-        let track = tracks[index]
-        AudioPlayer.shared.loadTrack(track)
-        
-        // Wait a moment for track to load before playing (loadTrack is now async)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            AudioPlayer.shared.play()
-            self.isLoadingTrack = false
-        }
-    }
-    
+
     func next() {
-        guard !tracks.isEmpty else { return }
-        
-        if shuffleEnabled {
-            // Use shuffled order
-            if shuffledIndices.isEmpty {
-                generateShuffledIndices()
-                shuffleCurrentIndex = 0
-            }
-            
-            shuffleCurrentIndex += 1
-            
-            // If we've reached the end of the shuffled list
-            if shuffleCurrentIndex >= shuffledIndices.count {
-                if repeatEnabled {
-                    // Regenerate shuffle order and start over (skip current track at index 0)
-                    generateShuffledIndices()
-                    shuffleCurrentIndex = 1  // Start with next track, not the current one
-                    
-                    // If we only have one track, just play it again
-                    if shuffledIndices.count <= 1 {
-                        shuffleCurrentIndex = 0
+        guard !self.tracks.isEmpty else { return }
+
+        if self.shuffleEnabled {
+            self.advanceShuffle(forward: true)
+        } else {
+            self.advanceSequential(forward: true)
+        }
+    }
+
+    func previous() {
+        guard !self.tracks.isEmpty else { return }
+
+        if self.shuffleEnabled {
+            self.advanceShuffle(forward: false)
+        } else {
+            self.advanceSequential(forward: false)
+        }
+    }
+
+    private func advanceShuffle(forward: Bool) {
+        if self.shuffledIndices.isEmpty {
+            self.generateShuffledIndices()
+            self.shuffleCurrentIndex = 0
+        }
+
+        if forward {
+            self.shuffleCurrentIndex += 1
+
+            if self.shuffleCurrentIndex >= self.shuffledIndices.count {
+                if self.repeatEnabled {
+                    self.generateShuffledIndices()
+                    self.shuffleCurrentIndex = 1
+
+                    if self.shuffledIndices.count <= 1 {
+                        self.shuffleCurrentIndex = 0
                     }
                 } else {
-                    // Stop playback at end of playlist
-                    AudioPlayer.shared.stop()
+                    self.audioPlayer.stop()
                     return
                 }
             }
-            
-            let nextIndex = shuffledIndices[shuffleCurrentIndex]
-            playTrack(at: nextIndex)
         } else {
-            // Normal sequential order
-            let nextIndex = currentIndex + 1
-            
-            if nextIndex >= tracks.count {
-                // Reached end of playlist
-                if repeatEnabled {
-                    // Loop back to beginning
-                    playTrack(at: 0)
+            self.shuffleCurrentIndex -= 1
+
+            if self.shuffleCurrentIndex < 0 {
+                if self.repeatEnabled {
+                    self.shuffleCurrentIndex = self.shuffledIndices.count - 1
                 } else {
-                    // Stop playback
-                    AudioPlayer.shared.stop()
+                    self.shuffleCurrentIndex = 0
+                    return
+                }
+            }
+        }
+
+        let targetIndex = self.shuffledIndices[self.shuffleCurrentIndex]
+        self.playTrack(at: targetIndex)
+    }
+
+    private func advanceSequential(forward: Bool) {
+        if forward {
+            let nextIndex = self.currentIndex + 1
+
+            if nextIndex >= self.tracks.count {
+                if self.repeatEnabled {
+                    self.playTrack(at: 0)
+                } else {
+                    self.audioPlayer.stop()
                 }
             } else {
-                playTrack(at: nextIndex)
+                self.playTrack(at: nextIndex)
             }
-        }
-    }
-    
-    func previous() {
-        guard !tracks.isEmpty else { return }
-        
-        if shuffleEnabled {
-            // Use shuffled order
-            if shuffledIndices.isEmpty {
-                generateShuffledIndices()
-                shuffleCurrentIndex = 0
-            }
-            
-            shuffleCurrentIndex -= 1
-            
-            if shuffleCurrentIndex < 0 {
-                if repeatEnabled {
-                    // Wrap to end of shuffled list
-                    shuffleCurrentIndex = shuffledIndices.count - 1
-                } else {
-                    // Stay at current track (can't go before first)
-                    shuffleCurrentIndex = 0
-                    return
-                }
-            }
-            
-            let prevIndex = shuffledIndices[shuffleCurrentIndex]
-            playTrack(at: prevIndex)
         } else {
-            // Normal sequential order
-            let prevIndex = currentIndex > 0 ? currentIndex - 1 : (repeatEnabled ? tracks.count - 1 : 0)
-            playTrack(at: prevIndex)
+            let prevIndex = self.currentIndex > 0 ? self.currentIndex - 1 : (self.repeatEnabled ? self.tracks.count - 1 : 0)
+            self.playTrack(at: prevIndex)
         }
     }
-    
+
     private func generateShuffledIndices() {
         // Generate a shuffled list of indices, ensuring current track is first
-        var indices = Array(0..<tracks.count)
-        
+        var indices = Array(0 ..< self.tracks.count)
+
         // Remove current index from the list
-        if currentIndex >= 0 && currentIndex < indices.count {
-            indices.remove(at: currentIndex)
+        if self.currentIndex >= 0, self.currentIndex < indices.count {
+            indices.remove(at: self.currentIndex)
         }
-        
+
         // Shuffle the remaining indices
         indices.shuffle()
-        
+
         // Put current index at the beginning
-        if currentIndex >= 0 && currentIndex < tracks.count {
-            shuffledIndices = [currentIndex] + indices
+        if self.currentIndex >= 0, self.currentIndex < self.tracks.count {
+            self.shuffledIndices = [self.currentIndex] + indices
         } else {
-            shuffledIndices = indices
+            self.shuffledIndices = indices
         }
-        
+
         // Don't reset shuffleCurrentIndex here - let the caller manage it
         // This allows us to set it appropriately when regenerating for repeat
     }
-    
+
+    func test_setShuffledIndices(_ indices: [Int], position: Int) {
+        self.shuffledIndices = indices
+        self.shuffleCurrentIndex = position
+    }
+
+    var test_shuffledIndices: [Int] {
+        self.shuffledIndices
+    }
+
+    var test_shuffleCurrentIndex: Int {
+        self.shuffleCurrentIndex
+    }
+
+    var test_playRequestGeneration: Int {
+        self.playRequestGeneration
+    }
+
+    var test_bookmarkStore: SecurityScopedBookmarkStore {
+        self.bookmarkStore
+    }
+
+    var test_stateStore: PlaylistStateStore {
+        self.stateStore
+    }
+
+    func persistStateForTests() {
+        self.persistState()
+    }
+
+    private func persistState() {
+        let paths = self.tracks.compactMap { $0.url?.standardizedFileURL.path }
+        self.stateStore.saveState(
+            PersistedPlaylistState(
+                trackPaths: paths,
+                currentIndex: self.currentIndex,
+                shuffleEnabled: self.shuffleEnabled,
+                repeatEnabled: self.repeatEnabled
+            )
+        )
+    }
+
+    private func restorePersistedState() {
+        guard let state = self.stateStore.loadState(), !state.trackPaths.isEmpty else { return }
+
+        self.isRestoringState = true
+        let paths = state.trackPaths
+        let savedIndex = state.currentIndex
+        let savedShuffle = state.shuffleEnabled
+        let savedRepeat = state.repeatEnabled
+
+        Task.detached(priority: .userInitiated) { [bookmarkStore] in
+            var restoredTracks: [Track] = []
+            var skippedPaths: [String] = []
+
+            for path in paths {
+                let url = URL(fileURLWithPath: path)
+                guard bookmarkStore.ensureAccess(for: url) else {
+                    skippedPaths.append(path)
+                    playlistLogger.warning("Skipped restore (no access): \(path, privacy: .public)")
+                    continue
+                }
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    skippedPaths.append(path)
+                    playlistLogger.warning("Skipped restore (missing file): \(path, privacy: .public)")
+                    continue
+                }
+                await restoredTracks.append(Track.load(from: url))
+            }
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                defer { self.isRestoringState = false }
+
+                if skippedPaths.isEmpty {
+                    self.lastRestoreSummary = nil
+                } else {
+                    self.lastRestoreSummary = PlaylistRestoreSummary(
+                        loadedCount: restoredTracks.count,
+                        skippedCount: skippedPaths.count,
+                        skippedPaths: skippedPaths
+                    )
+                }
+
+                if restoredTracks.isEmpty {
+                    self.currentIndex = -1
+                    self.persistState()
+                    return
+                }
+
+                self.tracks = restoredTracks
+                self.repeatEnabled = savedRepeat
+                self.currentIndex = min(max(savedIndex, 0), restoredTracks.count - 1)
+                self.shuffleEnabled = savedShuffle
+                self.persistState()
+
+                let track = restoredTracks[self.currentIndex]
+                self.audioPlayer.loadTrack(track, completion: nil)
+            }
+        }
+    }
+
+    func acknowledgeRestoreSummary() {
+        self.lastRestoreSummary = nil
+    }
+
+    func acknowledgeSaveError() {
+        self.lastSaveErrorMessage = nil
+    }
+
+    private func m3uPlaylistContent(relativeTo playlistFile: URL) -> String {
+        var content = "#EXTM3U\n"
+        for track in self.tracks {
+            if let trackUrl = track.url {
+                content += self.m3uEntry(for: trackUrl, relativeTo: playlistFile) + "\n"
+            }
+        }
+        return content
+    }
+
+    private func m3uEntry(for trackURL: URL, relativeTo playlistFile: URL) -> String {
+        let playlistDirectory = playlistFile.deletingLastPathComponent().standardizedFileURL
+        let normalizedTrack = trackURL.standardizedFileURL
+        let directoryPrefix = playlistDirectory.path + "/"
+        let trackPath = normalizedTrack.path
+        if trackPath.hasPrefix(directoryPrefix) {
+            return String(trackPath.dropFirst(directoryPrefix.count))
+        }
+        return trackPath
+    }
+
+    private func saveM3UPlaylist(to url: URL) {
+        do {
+            try self.m3uPlaylistContent(relativeTo: url).write(to: url, atomically: true, encoding: .utf8)
+            self.lastSaveErrorMessage = nil
+        } catch {
+            playlistLogger.error("Failed to save M3U playlist: \(error.localizedDescription, privacy: .public)")
+            self.lastSaveErrorMessage = "Could not save playlist. Check the folder permissions and try again."
+        }
+    }
+
+    func testing_saveM3UPlaylist(to url: URL) {
+        self.saveM3UPlaylist(to: url)
+    }
+
+    func testing_m3uEntry(for trackURL: URL, relativeTo playlistFile: URL) -> String {
+        self.m3uEntry(for: trackURL, relativeTo: playlistFile)
+    }
+
+    func importDroppedURL(_ url: URL) {
+        let ext = url.pathExtension
+
+        if M3UParser.isM3UExtension(ext) {
+            self.fileService.bookmarkM3UResources(for: url)
+            self.importTracksInBackground { [fileService] in
+                await fileService.loadM3UPlaylist(from: url)
+            }
+            return
+        }
+
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            self.bookmarkStore.saveBookmark(for: url)
+            self.addTracksFromFolder(url)
+            return
+        }
+
+        guard M3UParser.isSupportedAudioExtension(ext) else { return }
+        self.bookmarkStore.saveBookmark(for: url)
+        self.addTrackFromURL(url)
+    }
+
+    private func addTrackFromURL(_ url: URL) {
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let track = await Track.load(from: url)
+            await MainActor.run {
+                self?.addTrack(track)
+            }
+        }
+    }
+
     func showFilePicker() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowedContentTypes = [.mp3, .wav, .init(filenameExtension: "flac"), .init(filenameExtension: "m3u")].compactMap { $0 }
-        
+
         panel.begin { [weak self] response in
-            guard let self = self else { return }
-            if response == .OK {
-                // Save security-scoped bookmarks for selected files/folders
-                // This allows persistent access across app restarts
-                for url in panel.urls {
-                    self.saveSecurityScopedBookmark(for: url)
-                }
-                
-                // Create tracks on background queue to avoid blocking
-                DispatchQueue.global(qos: .userInitiated).async {
-                    var newTracks: [Track] = []
-                    for url in panel.urls {
-                        if url.pathExtension.lowercased() == "m3u" {
-                            // Load M3U playlist
-                            if let m3uTracks = self.loadM3UPlaylist(from: url) {
-                                newTracks.append(contentsOf: m3uTracks)
-                            }
-                        } else {
-                            // Regular audio file
-                            newTracks.append(Track(url: url))
-                        }
+            guard let self, response == .OK else { return }
+            self.importPickedURLs(panel.urls)
+        }
+    }
+
+    private func importPickedURLs(_ urls: [URL]) {
+        for url in urls {
+            if M3UParser.isM3UExtension(url.pathExtension) {
+                self.fileService.bookmarkM3UResources(for: url)
+            } else {
+                self.bookmarkStore.saveBookmark(for: url)
+            }
+        }
+
+        let fileService = self.fileService
+        Task.detached(priority: .userInitiated) { [weak self] in
+            var newTracks: [Track] = []
+            for url in urls {
+                if M3UParser.isM3UExtension(url.pathExtension) {
+                    if let m3uTracks = await fileService.loadM3UPlaylist(from: url) {
+                        newTracks.append(contentsOf: m3uTracks)
                     }
-                    // Add tracks on main queue
-                    self.addTracks(newTracks)
+                } else {
+                    await newTracks.append(Track.load(from: url))
                 }
+            }
+            await MainActor.run {
+                self?.addTracks(newTracks)
             }
         }
     }
-    
-    func loadM3UPlaylist(from url: URL) -> [Track]? {
-        // Ensure we have security-scoped access
-        _ = ensureSecurityScopedAccess(for: url)
-        
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
-            return nil
-        }
-        
-        var tracks: [Track] = []
-        let lines = content.components(separatedBy: .newlines)
-        let playlistDirectory = url.deletingLastPathComponent()
-        
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            
-            // Skip empty lines and comments (except #EXTM3U header)
-            guard !trimmed.isEmpty && !trimmed.hasPrefix("#") else { continue }
-            
-            // Handle both absolute and relative paths
-            let trackURL: URL
-            if trimmed.hasPrefix("/") || trimmed.hasPrefix("file://") {
-                // Absolute path
-                let path = trimmed.replacingOccurrences(of: "file://", with: "")
-                trackURL = URL(fileURLWithPath: path)
-            } else {
-                // Relative path - resolve relative to M3U file location
-                trackURL = playlistDirectory.appendingPathComponent(trimmed)
-            }
-            
-            // Resolve symlinks for local paths (not network volumes)
-            let resolvedURL: URL
-            if isNetworkVolume(trackURL) {
-                // Network volume - don't resolve symlinks
-                resolvedURL = trackURL
-            } else {
-                // Local path - resolve symlinks
-                resolvedURL = trackURL.resolvingSymlinksInPath()
-            }
-            
-            // Ensure security-scoped access before checking file
-            // This is especially important for network volumes
-            _ = ensureSecurityScopedAccess(for: resolvedURL)
-            
-            // Also try to get access to parent directories for network volumes
-            if isNetworkVolume(resolvedURL) {
-                var currentPath = resolvedURL.deletingLastPathComponent()
-                // Try to get access up to 3 levels up for network volumes
-                for _ in 0..<3 {
-                    if isNetworkVolume(currentPath) && currentPath.path != "/Volumes" {
-                        _ = ensureSecurityScopedAccess(for: currentPath)
-                        currentPath = currentPath.deletingLastPathComponent()
-                    } else {
-                        break
-                    }
-                }
-            }
-            
-            // Check if file exists and is a supported format
-            let fileManager = FileManager.default
-            if fileManager.fileExists(atPath: resolvedURL.path) {
-                let ext = resolvedURL.pathExtension.lowercased()
-                if ext == "mp3" || ext == "flac" || ext == "wav" {
-                    // Create track - this will try to get file size
-                    let track = Track(url: resolvedURL)
-                    tracks.append(track)
-                }
-            }
-        }
-        
-        return tracks
+
+    func loadM3UPlaylist(from url: URL) async -> [Track]? {
+        await self.fileService.loadM3UPlaylist(from: url)
     }
-    
+
     func saveM3UPlaylist() {
-        guard !tracks.isEmpty else {
+        guard !self.tracks.isEmpty else {
             return
         }
-        
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { 
-                return 
-            }
-            
-            let panel = NSSavePanel()
-            panel.allowedContentTypes = [.init(filenameExtension: "m3u")].compactMap { $0 }
-            panel.nameFieldStringValue = "playlist.m3u"
-            panel.title = "Save Playlist As"
-            panel.message = "Choose a name and location for your playlist"
-            panel.canCreateDirectories = true
-            panel.isExtensionHidden = false
-            panel.showsTagField = false
-            
-            // Use runModal for immediate display
-            let response = panel.runModal()
-            
-            if response == .OK, let url = panel.url {
-                var content = "#EXTM3U\n"
-                for track in self.tracks {
-                    // Use absolute paths for reliability
-                    if let trackUrl = track.url {
-                        content += trackUrl.path + "\n"
-                    }
-                }
-                
-                do {
-                    try content.write(to: url, atomically: true, encoding: .utf8)
-                } catch {
-                    // Failed to save playlist
-                }
-            }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.init(filenameExtension: "m3u")].compactMap { $0 }
+        panel.nameFieldStringValue = "playlist.m3u"
+        panel.title = "Save Playlist As"
+        panel.message = "Choose a name and location for your playlist"
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.showsTagField = false
+
+        let response = panel.runModal()
+
+        if response == .OK, let url = panel.url {
+            self.saveM3UPlaylist(to: url)
         }
     }
-    
+
     func showFolderPicker() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        
+
         panel.begin { [weak self] response in
             if response == .OK, let url = panel.url {
-                // Save security-scoped bookmark for the folder
-                self?.saveSecurityScopedBookmark(for: url)
+                self?.bookmarkStore.saveBookmark(for: url)
                 self?.addTracksFromFolder(url)
             }
         }
     }
-    
+
     private func addTracksFromFolder(_ folder: URL) {
-        // Ensure we have security-scoped access
-        _ = ensureSecurityScopedAccess(for: folder)
-        
-        // Do the file scanning on a background thread to avoid blocking
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            
-            let fileManager = FileManager.default
-            guard let enumerator = fileManager.enumerator(
-                at: folder, 
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles, .skipsPackageDescendants]
-            ) else {
-                return
+        self.importTracksInBackground { [fileService] in
+            let fileURLs = fileService.collectAudioFiles(in: folder)
+            var tracks: [Track] = []
+            for url in fileURLs {
+                await tracks.append(Track.load(from: url))
             }
-            
-            var fileURLs: [URL] = []
-            
-            // First, collect all audio file URLs (fast)
-            for case let fileURL as URL in enumerator {
-                // Check if it's a regular file
-                guard let resourceValues = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
-                      let isRegularFile = resourceValues.isRegularFile,
-                      isRegularFile else {
-                    continue
-                }
-                
-                let ext = fileURL.pathExtension.lowercased()
-                if ext == "mp3" || ext == "flac" || ext == "wav" {
-                    fileURLs.append(fileURL)
-                }
+            return tracks
+        }
+    }
+
+    private func importTracksInBackground(_ loadTracks: @escaping @Sendable () async -> [Track]?) {
+        Task.detached(priority: .userInitiated) {
+            guard let tracks = await loadTracks(), !tracks.isEmpty else { return }
+            await MainActor.run { [weak self] in
+                self?.addTracks(tracks)
             }
-            
-            // Create tracks from URLs (slower - loads metadata)
-            let newTracks = fileURLs.map { Track(url: $0) }
-            
-            // Add tracks on main queue
-            self.addTracks(newTracks)
         }
     }
 }
-

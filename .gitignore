@@ -19,9 +19,22 @@ DerivedData
 *.xcworkspace
 !default.xcworkspace
 
+.vscode/
+
 # Swift Package Manager
 .build/
 .swiftpm/
+
+# uv (test fixture generation)
+scripts/.venv/
+__pycache__/
+*.pyc
+
+# Local UI screenshot scratch
+.ui-review/
+
+# Generated test fixtures (see scripts/generate-fixtures.sh)
+Tests/Fixtures/
 
 # CocoaPods
 Pods/
