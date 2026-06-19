@@ -123,4 +123,27 @@ enum WinampWindowSnap {
             against: Box(window: other)
         )
     }
+
+    /// The minimal per-axis correction that snaps any of `moving` flush to any of `stationary`
+    /// (Webamp's `snapDiffManyToMany`): the first non-zero nudge found per axis, at most
+    /// `snapDistance`. Zero on an axis when no edge is in range. Added to a drag's proposed delta so
+    /// a moving group glides with the cursor yet sticks to edges — applied uniformly to every moving
+    /// window, which keeps a dragged cluster perfectly aligned.
+    static func snapDelta(moving: [Box], stationary: [Box]) -> CGSize {
+        var dx: CGFloat = 0
+        var dy: CGFloat = 0
+        for box in moving {
+            for other in stationary {
+                guard let snapped = self.snappedOrigin(
+                    box: box,
+                    origin: NSPoint(x: box.minX, y: box.minY),
+                    against: other
+                ) else { continue }
+                if dx == 0 { dx = snapped.x - box.minX }
+                if dy == 0 { dy = snapped.y - box.minY }
+                if dx != 0, dy != 0 { return CGSize(width: dx, height: dy) }
+            }
+        }
+        return CGSize(width: dx, height: dy)
+    }
 }

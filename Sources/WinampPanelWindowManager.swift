@@ -12,8 +12,9 @@ final class WinampPanelWindowManager {
 
     private struct ActiveDrag {
         let lead: NSWindow
+        let moving: [NSWindow]
+        let startOrigins: [ObjectIdentifier: NSPoint]
         let mouseStart: NSPoint
-        let startOrigin: NSPoint
     }
 
     private var windows: [WinampPanelID: NSWindow] = [:]
@@ -28,13 +29,14 @@ final class WinampPanelWindowManager {
     private var dragEventMonitor: Any?
     private var activeDrag: ActiveDrag?
 
-    /// The set of panels the manager can host, in default top→bottom stack order. Built once;
-    /// each descriptor reads live layout state through `self`, so a new panel is added by appending
-    /// a descriptor here rather than editing per-kind branches throughout the manager.
+    /// The set of panels the manager can host. Built once; each descriptor reads live layout state
+    /// through `self`, so a new panel is added by appending a descriptor here rather than editing
+    /// per-kind branches throughout the manager.
     private lazy var registry: [WinampPanelDescriptor] = self.makeRegistry()
 
-    /// The persisted, ordered stack — the single source of truth for dock order and floating state.
-    private lazy var stackModel = WinampPanelStackModel(defaultOrder: self.panelIDs)
+    /// Persisted per-panel offset from the main window. In the geometry-primary docking model the
+    /// window positions are the source of truth; this is what survives relaunch.
+    private let positionStore = WinampPanelPositionStore()
 
     private var panelIDs: [WinampPanelID] { self.registry.map(\.id) }
 
@@ -42,12 +44,19 @@ final class WinampPanelWindowManager {
         self.registry.first { $0.id == id }
     }
 
-    private func isFloating(_ id: WinampPanelID) -> Bool {
-        self.stackModel.floating.contains(id)
+    /// Derive the dock parent of every visible panel from current window geometry (the 2D spanning
+    /// tree rooted at the main window). Panels absent from the result are floating.
+    private func currentDockParents() -> [WinampPanelID: WinampDockNode] {
+        guard let mainFrame = self.mainWindow?.frame else { return [:] }
+        var frames: [WinampDockNode: CGRect] = [.main: mainFrame]
+        for id in self.panelIDs where self.windows[id]?.isVisible == true {
+            frames[.panel(id)] = self.windows[id]?.frame ?? .zero
+        }
+        return WinampDockGraph.parents(frames: frames, order: self.panelIDs)
     }
 
-    private func visibleIDs() -> Set<WinampPanelID> {
-        Set(self.panelIDs.filter { self.windows[$0]?.isVisible == true })
+    private func isFloatingNow(_ id: WinampPanelID) -> Bool {
+        self.currentDockParents()[id] == nil
     }
 
     private func makeRegistry() -> [WinampPanelDescriptor] {
@@ -130,28 +139,54 @@ final class WinampPanelWindowManager {
         self.stackDockedPanels()
     }
 
-    /// Resize the playlist panel to match `layoutState` without rebuilding its SwiftUI tree.
+    /// Resize the playlist panel to match `layoutState`. Applies the new size **and** origin in a
+    /// single `setFrame` so the window never momentarily grows the wrong way and gets repositioned
+    /// back (which caused a resize flicker). The top edge stays anchored — to the dock parent's
+    /// bottom when docked, or its own current top when floating — matching the bottom-edge handle.
     func resizePlaylistPanel() {
-        guard self.windows[.playlist]?.isVisible == true,
+        guard let window = self.windows[.playlist], window.isVisible,
               let descriptor = self.descriptor(for: .playlist) else { return }
-        self.applyContentSize(for: descriptor)
-        if !self.isFloating(.playlist) {
-            self.repositionDockedPlaylist()
+
+        let contentSize = self.targetContentSize(for: descriptor)
+        let frameSize = window.frameRect(forContentRect: CGRect(origin: .zero, size: contentSize)).size
+
+        let topY: CGFloat
+        let originX: CGFloat
+        if !self.isFloatingNow(.playlist), let anchor = self.dockAnchorWindow(for: .playlist) {
+            topY = anchor.frame.minY
+            originX = anchor.frame.minX
+        } else {
+            topY = window.frame.maxY
+            originX = window.frame.minX
         }
+        let frame = CGRect(x: originX, y: topY - frameSize.height, width: frameSize.width, height: frameSize.height)
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            window.setFrame(frame, display: true)
+        }
+        self.persistPositions()
     }
 
-    /// Begin a title-bar drag. The grabbed window is detached from its parent so it moves freely;
-    /// its own child windows (the sub-tree docked below it) stay attached and follow atomically via
-    /// the WindowServer. Dock relationships are recomputed from geometry on mouse-up.
+    /// Begin a title-bar drag, following Webamp's window-manager model: detach all docked child
+    /// links so AppKit doesn't auto-move panels we reposition manually, then drag the **moving set**
+    /// as a group. The main window brings its whole connected cluster; a panel moves alone. Dock
+    /// links are rebuilt from the final geometry on mouse-up.
     func startDrag(leading window: NSWindow, event _: NSEvent) {
         self.endDrag()
 
-        window.parent?.removeChildWindow(window)
+        self.detachAllChildLinks()
+        let moving = self.movingSet(for: window)
+        let origins = Dictionary(uniqueKeysWithValues: moving.map { (ObjectIdentifier($0), $0.frame.origin) })
         self.activeDrag = ActiveDrag(
             lead: window,
-            mouseStart: NSEvent.mouseLocation,
-            startOrigin: window.frame.origin
+            moving: moving,
+            startOrigins: origins,
+            mouseStart: NSEvent.mouseLocation
         )
+
+        // TEMP [DRAG] diagnostic.
+        DragTrace.log("START lead=\(self.dragLabel(for: window)) moving=\(moving.count)")
 
         self.dragEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { [weak self] event in
             let eventType = event.type
@@ -170,58 +205,120 @@ final class WinampPanelWindowManager {
         }
     }
 
+    /// Re-establish the docked arrangement: mirror the geometry-derived dock graph onto AppKit
+    /// child-window links. Window positions are the source of truth, so this does not impose an
+    /// order — it just reflects where the user put the windows. Called after a panel is shown/hidden
+    /// or the main window moves.
     func stackDockedPanels() {
-        guard let mainWindow else { return }
-
-        // Position the docked panels in model order: each sits flush below its predecessor, the
-        // first below the main window. Generic over the registry — no per-panel branches — so a
-        // reordered stack (e.g. playlist above EQ) or a new panel just works.
-        var anchor = mainWindow
-        for id in self.stackModel.dockedStack(visible: self.visibleIDs()) {
-            guard let window = self.windows[id] else { continue }
-            self.positionPanel(id, below: anchor)
-            anchor = window
-        }
-
+        guard self.mainWindow != nil else { return }
         self.syncChildWindowLinks()
     }
 
-    /// Mirror the dock graph onto AppKit parent/child window links. A docked, visible panel becomes
-    /// a child window of the window it docks beneath, so the WindowServer moves the whole stack with
-    /// its parent (atomic, lag-free) and a dragged panel carries the sub-tree docked below it.
-    /// Floating or hidden panels are detached. Only changed links are touched, so it is cheap to
-    /// call after any layout pass.
+    /// Mirror the geometry-derived dock graph onto AppKit parent/child window links. A docked,
+    /// visible panel becomes a child window of the window it abuts toward the main player, so the
+    /// WindowServer moves the whole cluster with its parent (atomic, lag-free) and dragging a window
+    /// carries its sub-tree. Floating or hidden panels are detached.
+    ///
+    /// Done in two phases — **detach all changing links, then attach** — so two panels swapping
+    /// parent/child roles never transiently form a parent↔child cycle (which makes AppKit recurse
+    /// the window graph and crash with SIGSEGV).
     private func syncChildWindowLinks() {
+        let parents = self.currentDockParents()
+        let desired: [(panel: NSWindow, parent: NSWindow?)] = self.panelIDs.compactMap { id in
+            guard let panel = self.windows[id] else { return nil }
+            let parent = panel.isVisible ? self.dockParentWindow(for: id, parents: parents) : nil
+            return (panel, parent)
+        }
+
+        for (panel, parent) in desired where panel.parent !== parent {
+            panel.parent?.removeChildWindow(panel)
+        }
+        for (panel, parent) in desired {
+            guard let parent, parent !== panel, parent.isVisible, panel.parent !== parent else { continue }
+            parent.addChildWindow(panel, ordered: .above)
+        }
+    }
+
+    private func dockParentWindow(for id: WinampPanelID, parents: [WinampPanelID: WinampDockNode]) -> NSWindow? {
+        switch parents[id] {
+        case .main: self.mainWindow
+        case let .panel(parentID): self.windows[parentID]
+        case nil: nil
+        }
+    }
+
+    /// Detach every managed panel from its parent window, flattening the child-window graph. Done
+    /// before a drag so AppKit doesn't auto-move docked panels we are repositioning manually, and
+    /// rebuilt from geometry on drop.
+    private func detachAllChildLinks() {
         for id in self.panelIDs {
             guard let panel = self.windows[id] else { continue }
-
-            let desiredParent: NSWindow? = panel.isVisible && !self.isFloating(id)
-                ? self.dockAnchorWindow(for: id)
-                : nil
-
-            guard panel.parent !== desiredParent else { continue }
-            panel.parent?.removeChildWindow(panel)
-            if let desiredParent, desiredParent !== panel, desiredParent.isVisible {
-                desiredParent.addChildWindow(panel, ordered: .above)
+            for child in panel.childWindows ?? [] {
+                panel.removeChildWindow(child)
             }
+            panel.parent?.removeChildWindow(panel)
         }
     }
 
     // MARK: - Drag
 
+    /// Windows that move together when `lead` is dragged. Per Webamp: the main window carries its
+    /// whole geometry-connected cluster; any panel moves by itself.
+    private func movingSet(for lead: NSWindow) -> [NSWindow] {
+        guard lead === self.mainWindow else { return [lead] }
+        return WinampWindowSnap.traceConnected(from: lead, among: self.managedWindowsIncludingMain())
+    }
+
     private func handleDragMoved() {
         guard let drag = self.activeDrag else { return }
 
-        let currentMouse = NSEvent.mouseLocation
-        let deltaX = currentMouse.x - drag.mouseStart.x
-        let deltaY = currentMouse.y - drag.mouseStart.y
-
-        // Move only the lead window. Its child windows (the docked sub-tree below it) follow
-        // atomically via the WindowServer, so the whole stack tracks the cursor in lockstep — no
-        // per-window frame lag, and dragging a mid-stack panel carries everything docked beneath it.
-        drag.lead.setFrameOrigin(
-            NSPoint(x: drag.startOrigin.x + deltaX, y: drag.startOrigin.y + deltaY)
+        let mouse = NSEvent.mouseLocation
+        let proposed = CGSize(
+            width: mouse.x - drag.mouseStart.x,
+            height: mouse.y - drag.mouseStart.y
         )
+
+        // Webamp group-diff snapping: offset every moving window by the cursor delta, then add one
+        // small correction (≤ snapDistance) that snaps the group's edges to the stationary windows.
+        // Applying the SAME final delta to all moving windows keeps a dragged cluster rigid and
+        // perfectly aligned, and the live correction gives magnetic feedback as you approach an edge.
+        let movingBoxes = drag.moving.map { window -> WinampWindowSnap.Box in
+            let start = drag.startOrigins[ObjectIdentifier(window)] ?? window.frame.origin
+            let origin = NSPoint(x: start.x + proposed.width, y: start.y + proposed.height)
+            return WinampWindowSnap.Box(frame: CGRect(origin: origin, size: window.frame.size))
+        }
+        let movingSet = Set(drag.moving.map { ObjectIdentifier($0) })
+        let stationaryBoxes = self.managedWindowsIncludingMain()
+            .filter { !movingSet.contains(ObjectIdentifier($0)) }
+            .map { WinampWindowSnap.Box(window: $0) }
+
+        let correction = WinampWindowSnap.snapDelta(moving: movingBoxes, stationary: stationaryBoxes)
+        let final = CGSize(width: proposed.width + correction.width, height: proposed.height + correction.height)
+
+        for window in drag.moving {
+            guard let start = drag.startOrigins[ObjectIdentifier(window)] else { continue }
+            window.setFrameOrigin(NSPoint(x: start.x + final.width, y: start.y + final.height))
+        }
+
+        // TEMP [DRAG] diagnostic.
+        let snapNote = (correction.width != 0 || correction.height != 0)
+            ? "SNAP dx=\(Int(correction.width)) dy=\(Int(correction.height))" : "free"
+        DragTrace.log("move lead=\(self.dragLabel(for: drag.lead)) n=\(drag.moving.count) stationary=\(stationaryBoxes.count) \(snapNote)")
+    }
+
+    private func dragLabel(for window: NSWindow) -> String {
+        if window === self.mainWindow { return "main" }
+        for id in self.panelIDs where self.windows[id] === window { return id.rawValue }
+        return "?"
+    }
+
+    private func managedWindowsIncludingMain() -> [NSWindow] {
+        var result: [NSWindow] = []
+        if let mainWindow { result.append(mainWindow) }
+        for id in self.panelIDs where self.windows[id]?.isVisible == true {
+            if let window = self.windows[id] { result.append(window) }
+        }
+        return result
     }
 
     private func endDrag() {
@@ -229,12 +326,94 @@ final class WinampPanelWindowManager {
             NSEvent.removeMonitor(monitor)
             self.dragEventMonitor = nil
         }
+        let wasDragging = self.activeDrag != nil
         self.activeDrag = nil
-        // Reclassify the stack from where the windows landed (geometry → model), then snap every
-        // docked panel to its exact flush position. `stackDockedPanels` does the snapping, so no
-        // separate snap pass is needed.
-        self.refreshDockState()
-        self.stackDockedPanels()
+
+        // Pull docked windows fully flush to their parents (both axes), then rebuild the dock links
+        // and persist. The during-drag snap only aligns the axis you're near, so a window can land
+        // docked-but-offset on the perpendicular axis; flushing on drop makes it stick clean — no
+        // residual gap that would otherwise ride along when the cluster moves.
+        if wasDragging {
+            self.flushDockedWindows()
+            self.syncChildWindowLinks()
+            self.persistPositions()
+        }
+
+        // TEMP [DRAG] diagnostic — final arrangement + derived parents.
+        if wasDragging {
+            let parents = self.currentDockParents()
+            let summary = self.panelIDs
+                .filter { self.windows[$0]?.isVisible == true }
+                .map { id -> String in
+                    let frame = self.windows[id]?.frame ?? .zero
+                    let parent = parents[id].map { node -> String in
+                        switch node {
+                        case .main: "main"
+                        case let .panel(pid): pid.rawValue
+                        }
+                    } ?? "FLOATING"
+                    return "\(id.rawValue)@(\(Int(frame.minX)),\(Int(frame.minY)))→\(parent)"
+                }
+                .joined(separator: " ")
+            DragTrace.log("END \(summary)")
+        }
+    }
+
+    /// Save every visible panel's offset from the main window so the arrangement restores on relaunch.
+    private func persistPositions() {
+        guard let mainOrigin = self.mainWindow?.frame.origin else { return }
+        for id in self.panelIDs where self.windows[id]?.isVisible == true {
+            guard let origin = self.windows[id]?.frame.origin else { continue }
+            self.positionStore.store(id, panelOrigin: origin, mainOrigin: mainOrigin)
+        }
+    }
+
+    /// Align every docked panel flush against its parent on **both** axes (top-down from the main
+    /// window). The docking edge is whichever of the four is closest in the current geometry; the
+    /// perpendicular axis is aligned to the parent's near edge (left-align when stacked vertically,
+    /// top-align when placed side by side) — the classic Winamp flush behavior.
+    private func flushDockedWindows() {
+        let parents = self.currentDockParents()
+        for id in self.dockedBFSOrder(parents: parents) {
+            guard let panel = self.windows[id],
+                  let parentWindow = self.dockParentWindow(for: id, parents: parents) else { continue }
+
+            let parentFrame = parentWindow.frame
+            let size = panel.frame.size
+            let panelFrame = panel.frame
+
+            // Gaps to each of the parent's edges (macOS coords: minY = bottom, maxY = top).
+            let gapBelow = abs(panelFrame.maxY - parentFrame.minY)
+            let gapAbove = abs(panelFrame.minY - parentFrame.maxY)
+            let gapRight = abs(panelFrame.minX - parentFrame.maxX)
+            let gapLeft = abs(panelFrame.maxX - parentFrame.minX)
+            let minGap = min(gapBelow, gapAbove, gapRight, gapLeft)
+
+            let origin: NSPoint = if minGap == gapBelow {
+                NSPoint(x: parentFrame.minX, y: parentFrame.minY - size.height)
+            } else if minGap == gapAbove {
+                NSPoint(x: parentFrame.minX, y: parentFrame.maxY)
+            } else if minGap == gapRight {
+                NSPoint(x: parentFrame.maxX, y: parentFrame.maxY - size.height)
+            } else {
+                NSPoint(x: parentFrame.minX - size.width, y: parentFrame.maxY - size.height)
+            }
+            self.setFrameOriginWithoutAnimation(panel, origin: origin)
+        }
+    }
+
+    /// Docked panels ordered so a parent always precedes its children (BFS from `.main`).
+    private func dockedBFSOrder(parents: [WinampPanelID: WinampDockNode]) -> [WinampPanelID] {
+        var ordered: [WinampPanelID] = []
+        var frontier: [WinampDockNode] = [.main]
+        while !frontier.isEmpty {
+            let node = frontier.removeFirst()
+            for id in self.panelIDs where parents[id] == node && !ordered.contains(id) {
+                ordered.append(id)
+                frontier.append(.panel(id))
+            }
+        }
+        return ordered
     }
 
     // MARK: - Private
@@ -295,6 +474,10 @@ final class WinampPanelWindowManager {
             )
             let hosting = NSHostingController(rootView: decoratedView)
             hosting.view.wantsLayer = true
+            // The manager owns window sizing (see `applyContentSize`/`resizePlaylistPanel`). Without
+            // this, the hosting controller also resizes the window when SwiftUI content changes —
+            // anchored origin-fixed, so it grows the wrong way and fights our frame set, flickering.
+            hosting.sizingOptions = []
 
             window = NSWindow(
                 contentRect: .zero,
@@ -308,21 +491,45 @@ final class WinampPanelWindowManager {
 
             self.windows[id] = window
             self.hostingControllers[id] = hosting
-            // A freshly shown panel docks (its place in the order comes from the persisted model).
-            self.stackModel.markDocked(id)
+            self.applyContentSize(for: descriptor)
+            self.placePanelInitially(id)
+            window.orderFront(nil)
+            return
         }
 
         self.applyContentSize(for: descriptor)
         window.orderFront(nil)
     }
 
+    /// Position a freshly created panel: at its persisted offset from the main window if known,
+    /// otherwise stacked flush below the current bottom of the cluster (the classic default).
+    private func placePanelInitially(_ id: WinampPanelID) {
+        guard let window = self.windows[id], let mainWindow else { return }
+        if let origin = self.positionStore.origin(for: id, mainOrigin: mainWindow.frame.origin) {
+            self.setFrameOriginWithoutAnimation(window, origin: origin)
+        } else if let bottom = self.lowestVisibleManagedWindow(excluding: id) {
+            let origin = NSPoint(x: bottom.frame.minX, y: bottom.frame.minY - window.frame.height)
+            self.setFrameOriginWithoutAnimation(window, origin: origin)
+        }
+    }
+
+    private func lowestVisibleManagedWindow(excluding: WinampPanelID) -> NSWindow? {
+        self.managedWindowsIncludingMain()
+            .filter { $0 !== self.windows[excluding] }
+            .min { $0.frame.minY < $1.frame.minY }
+    }
+
     private func hidePanel(id: WinampPanelID) {
         guard let window = self.windows[id] else { return }
-        // Detach first: ordering out a window also hides its child windows, which would wrongly hide
-        // a panel docked below this one. Re-anchoring + `syncChildWindowLinks` then re-attaches any
-        // orphaned sub-tree to a still-visible anchor.
+        // Close the vertical gap the panel leaves: detach its child sub-trees and shift any that sat
+        // directly below it up by its height, so the cluster stays flush (e.g. hiding the EQ slides
+        // the playlist up under the main window). `syncChildWindowLinks` then re-attaches them.
+        let gap = window.frame.height
         for child in window.childWindows ?? [] {
             window.removeChildWindow(child)
+            if WinampWindowSnap.near(child.frame.maxY, window.frame.minY) {
+                child.setFrameOrigin(NSPoint(x: child.frame.minX, y: child.frame.minY + gap))
+            }
         }
         window.parent?.removeChildWindow(window)
         window.orderOut(nil)
@@ -330,22 +537,24 @@ final class WinampPanelWindowManager {
 
     private func applyContentSize(for descriptor: WinampPanelDescriptor) {
         guard let window = self.windows[descriptor.id] else { return }
+        self.setContentSizeWithoutAnimation(window, size: self.targetContentSize(for: descriptor))
+    }
 
+    /// The content size a panel should have, per its sizing policy.
+    private func targetContentSize(for descriptor: WinampPanelDescriptor) -> NSSize {
         let panelWidth = self.uiScale?.panelWidth ?? WinampMetrics.panelWidth
-        let size: NSSize
-
         switch descriptor.sizing {
         case .fixedToContent:
-            guard let hosting = self.hostingControllers[descriptor.id] else { return }
+            guard let hosting = self.hostingControllers[descriptor.id] else {
+                return NSSize(width: panelWidth, height: 50)
+            }
             hosting.view.layoutSubtreeIfNeeded()
             let fitting = hosting.sizeThatFits(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
-            size = NSSize(width: panelWidth, height: max(fitting.height, 50))
+            return NSSize(width: panelWidth, height: max(fitting.height, 50))
         case let .explicit(provider):
             let desired = provider()
-            size = NSSize(width: max(desired.width, panelWidth), height: desired.height)
+            return NSSize(width: max(desired.width, panelWidth), height: desired.height)
         }
-
-        self.setContentSizeWithoutAnimation(window, size: size)
     }
 
     private func setContentSizeWithoutAnimation(_ window: NSWindow, size: NSSize) {
@@ -362,13 +571,9 @@ final class WinampPanelWindowManager {
         }
     }
 
-    /// The window a docked panel sits directly below, resolved from the ordered stack model.
-    /// Returns the main window when the panel is the topmost docked entry.
+    /// The window the docked playlist abuts toward the main player, derived from current geometry.
     private func dockAnchorWindow(for id: WinampPanelID) -> NSWindow? {
-        guard let anchorID = self.stackModel.anchorAbove(of: id, visible: self.visibleIDs()) else {
-            return self.mainWindow
-        }
-        return self.windows[anchorID] ?? self.mainWindow
+        self.dockParentWindow(for: id, parents: self.currentDockParents())
     }
 
     private func positionPanel(_ id: WinampPanelID, below anchor: NSWindow, resize: Bool = true) {
@@ -394,8 +599,9 @@ final class WinampPanelWindowManager {
     private func handleWindowResized(_ resized: NSWindow) {
         if resized === self.windows[.playlist] {
             // Size is owned by `layoutState`; only re-anchor when docked.
-            if !self.isFloating(.playlist) {
+            if !self.isFloatingNow(.playlist) {
                 self.repositionDockedPlaylist()
+                self.persistPositions()
             }
             return
         }
@@ -403,27 +609,6 @@ final class WinampPanelWindowManager {
         if resized === self.mainWindow {
             self.stackDockedPanels()
         }
-    }
-
-    /// Reclassify dock order and floating state from current window geometry (drag-end write-back).
-    /// Delegates the ordering to the pure `WinampPanelStackResolver`, then stores the result in the
-    /// model — the single source of truth that `stackDockedPanels` and `dockAnchorWindow` read back.
-    private func refreshDockState() {
-        guard let mainFrame = self.mainWindow?.frame else { return }
-
-        var visibleFrames: [WinampPanelID: CGRect] = [:]
-        for id in self.panelIDs {
-            if let window = self.windows[id], window.isVisible {
-                visibleFrames[id] = window.frame
-            }
-        }
-
-        let resolved = WinampPanelStackResolver.resolve(
-            preferenceOrder: self.stackModel.order,
-            visibleFrames: visibleFrames,
-            mainFrame: mainFrame
-        )
-        self.stackModel.update(order: resolved.order, floating: resolved.floating)
     }
 
     private func handleMainMiniaturized(_ window: NSWindow) {
@@ -440,6 +625,25 @@ final class WinampPanelWindowManager {
     private func handleMainDeminiaturized(_ window: NSWindow) {
         guard window === self.mainWindow else { return }
         self.syncPanels()
+    }
+}
+
+/// TEMP: lightweight stderr trace for studying drag/magnetism feel. Prints `[DRAG]` lines with a
+/// millisecond timestamp so cadence is visible in the streamed terminal output. Remove once the
+/// magnetic snapping is tuned.
+private enum DragTrace {
+    private static let start = Date()
+    private static let fileURL = URL(fileURLWithPath: "/tmp/winamp_drag.log")
+    nonisolated(unsafe) static var handle: FileHandle? = {
+        FileManager.default.createFile(atPath: fileURL.path, contents: nil)
+        return try? FileHandle(forWritingTo: fileURL)
+    }()
+
+    static func log(_ message: String) {
+        let ms = Int(Date().timeIntervalSince(self.start) * 1000)
+        let line = "[DRAG +\(ms)ms] \(message)\n"
+        FileHandle.standardError.write(Data(line.utf8))
+        self.handle?.write(Data(line.utf8))
     }
 }
 

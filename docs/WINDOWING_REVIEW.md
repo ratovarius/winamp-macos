@@ -24,8 +24,9 @@ the main window by ~1 frame. None are crashers; all are visual/UX correctness or
 > (M1), sizing is descriptor data (M4), and an ordered, persisted `WinampPanelStackModel` is now the
 > single source of truth for dock order (M2) — which closed W5 (the EQ can dock anywhere and stay)
 > and made W2 structural. The geometry→order resolver is a pure, unit-tested function (partial W9).
-> Remaining: **M3** (a user-facing reorder control — drag-snap reorder already persists), **W8**
-> (visualizer as a panel), and the rest of W9 (manager-level integration tests).
+> Reordering is now also exposed explicitly (M3): a **Window** menu moves a docked panel up/down,
+> persisted. Remaining: **W8** (visualizer as a panel) and the rest of W9 (manager-level
+> integration tests).
 
 The recurring root cause behind the drag-lag and the docking gaps is the same: the manager does
 **manual per-window frame bookkeeping** instead of using native window grouping
@@ -47,7 +48,7 @@ _Severity `Arch` = architectural/design-level (enables the modular goal), not a 
 |---|---|---|---|
 | M1 | Closed `WinampPanelKind` enum + per-kind switches block new panels | Arch | ✅ |
 | M2 | No explicit, ordered, persisted stack model (order is hardcoded) | Arch | ✅ |
-| M3 | No user reordering of the stack | Arch | 🟡 |
+| M3 | No user reordering of the stack | Arch | ✅ |
 | M4 | Per-kind sizing/anchor logic should be descriptor data (strategy) | Arch | ✅ |
 | W1 | Stack drag lag — panels trail main by ~1 frame (regression) | Important | ✅ |
 | W2 | Toggling EQ off leaves a gap; tested anchor fn is bypassed | Important | ✅ |
@@ -203,12 +204,23 @@ docks below main — no gap) and **W5 falls out** (see below). Scope: 1-D vertic
 *drag-snap* reordering only — an explicit reorder UI is M3. Verified: 10 new `WinampPanelStackTests`
 (resolver + model + persistence) pass; full suite green.
 
-### M3 — No user reordering  🟡
-With M2 in place, **drag-snap reordering already works and persists** — dropping the EQ below the
-playlist is recorded in `model.order` and survives restart. What's left is an *explicit* control
-(a View-menu entry or a small windows list) for users who'd rather not drag; that is the remaining
-M3 surface. The model intentionally exposes only the drag-snap write path for now (per scope
-decision), so adding `move(_:to:)` + a menu is a small follow-up.
+### M3 — No user reordering  ✅
+With M2 in place, **drag-snap reordering already worked and persisted**. M3 adds an **explicit**
+control so reordering doesn't require fiddly window dragging:
+
+- `WinampPanelStackModel.move(_:_:visible:)` + `canMove(...)` swap a docked panel with its docked
+  neighbor in the global order and persist (no-op at a boundary or when the neighbor is hidden).
+- The manager exposes `dockedPanelMenuItems()` (docked order + titles, via a new `title` on
+  `WinampPanelDescriptor`), `canMovePanel(_:_:)`, and `movePanel(_:_:)` (reorder + restack).
+- `WinampApp` gains a **Window** `CommandMenu`: “Move <Panel> Up/Down” per docked panel, disabled at
+  the boundary; invoking restacks the windows immediately.
+
+Scope: 1-D vertical stack; a drag-to-reorder “windows list” UI is intentionally not built (low value
+at two panels). Locked by 5 reorder tests in `WinampPanelStackTests`.
+
+> *Menu reactivity:* the command builder reads the manager (a non-observed singleton), so the
+> enabled/disabled state can lag until SwiftUI re-evaluates; actions are guarded, so this is purely
+> cosmetic. Making the model `ObservableObject` is a small future polish.
 
 ### M4 — Per-kind sizing/anchor logic should be descriptor data  ✅
 The **sizing** half landed with M1: `sizePanelWindow` / `applyPlaylistContentSize` /
@@ -407,7 +419,7 @@ harness, so it stays deferred.
 6. **M2** ✅ — `WinampPanelStackModel` (ordered, persisted) is the single source of truth;
    `dockedBelow` is gone, `stackDockedPanels` is a generic loop. *Closed W5; made W2 structural.*
 7. **M4** ✅ — sizing folded into `PanelSizingPolicy`; anchor special-cases removed with M2.
-8. **M3** 🟡 — drag-snap reorder persists today; an explicit reorder control is the remaining surface.
+8. **M3** ✅ — drag-snap reorder persists; a **Window** menu adds explicit move-up/down per panel.
 
 **Phase 2 — native grouping & fidelity:**
 9. **Fix A — parent-child windows** ✅ landed early (see W1/W6); the child-window chain is built from
