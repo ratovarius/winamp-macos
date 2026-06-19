@@ -11,7 +11,7 @@ on:
 
 jobs:
   test:
-    runs-on: macos-14
+    runs-on: macos-15
     # Skip for version bump commits (mirrors the build job guard below).
     if: |
       github.event.head_commit == null ||
@@ -25,7 +25,7 @@ jobs:
       - name: Set up Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '15.0'
+          xcode-version: '16.4'
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -37,7 +37,7 @@ jobs:
 
   build:
     needs: test
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     # Skip workflow for version bump commits
@@ -55,7 +55,7 @@ jobs:
       - name: Set up Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '15.0'
+          xcode-version: '16.4'
       
       - name: Extract and bump version
         id: get_version
